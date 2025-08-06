@@ -13,8 +13,8 @@ class AnnotationTool(QMainWindow):
         self.setWindowTitle("视频标注工具")
         self.resize(1200, 800)
         # 视频帧相关变量
-        self.video_frames = []      #存储所有视频帧
-        self.video_path = ""        #视频的输入路径
+        self.video_frames = []         #存储所有视频帧
+        self.video_path = ""           #视频的输入路径
         self.current_frame_index = 0   #当前显示的帧索引
         self.total_frame_count = 0     #视频总帧数
         self.frame_rate = 30           #视频的帧率
@@ -141,9 +141,9 @@ class AnnotationTool(QMainWindow):
         # 第一行：视频编号、帧序号、帧率
         top_info_layout = QHBoxLayout()
         
-        self.video_id_label = QLabel("视频编号: ")
+        self.video_id_label = QLabel("视频名称: ")
         self.video_id_label.setFont(font)
-        self.video_id_value = QLabel("001")
+        self.video_id_value = QLabel("")
         self.video_id_value.setFont(font)
         
         self.frame_num_label = QLabel("帧序号: ")
@@ -188,8 +188,6 @@ class AnnotationTool(QMainWindow):
         self.video_display.setStyleSheet("background-color: #000000; color: white;")
         left_layout.addWidget(self.video_display)
 
-        # 移除视频控制部分代码
-
         main_splitter.addWidget(left_panel)
 
         # 右侧面板 - 控制和设置
@@ -233,6 +231,29 @@ class AnnotationTool(QMainWindow):
 
         props_group.setLayout(props_layout)
         annotation_layout.addWidget(props_group)
+
+        #添加重置该标签、上一帧、下一帧的按钮组
+        TODO: 标注工具组的按钮点击事件
+
+        control_group = QGroupBox("控制")
+        control_layout = QHBoxLayout()
+
+        self.reset_btn = QPushButton("重置该标签")
+        self.prev_frame_btn = QPushButton("上一帧")
+        self.next_frame_btn = QPushButton("下一帧")
+
+        # 连接按钮点击事件
+        TODO: 重置该标签的点击事件函数
+        #self.reset_btn.clicked.connect(self.reset_annotation)
+        self.prev_frame_btn.clicked.connect(self.prev_frame)
+        self.next_frame_btn.clicked.connect(self.next_frame)
+
+        control_layout.addWidget(self.reset_btn)
+        control_layout.addWidget(self.prev_frame_btn)
+        control_layout.addWidget(self.next_frame_btn)
+
+        control_group.setLayout(control_layout)
+        annotation_layout.addWidget(control_group)
 
         annotation_layout.addStretch()
         right_panel.addTab(annotation_tab, "标注")
@@ -317,6 +338,7 @@ class AnnotationTool(QMainWindow):
         )
         if file_path:
             self.video_path = file_path
+            self.video_id_value.setText(str(self.video_path.split('/')[-1]))
             self.load_video_frames()
     
     def load_video_frames(self):
@@ -325,33 +347,35 @@ class AnnotationTool(QMainWindow):
         self.video_frames = []
         self.current_frame_index = 0
 
-        # 使用OpenCV读取视频
-        capture = cv2.VideoCapture(self.video_path)
-        if not capture.isOpened():
-            QMessageBox.warning(self, "警告", "无法打开视频文件")
+        try:
+            # 打开视频文件
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                QMessageBox.warning(self, "警告", "无法打开视频文件")
+                return
+            # 读取视频信息
+            self.frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
+            self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            # 按帧率提取帧
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                # 转换为RGB格式
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                self.video_frames.append(frame)
+            cap.release()
+            # 更新界面显示
+            if self.video_frames:
+                self.display_current_frame()
+                self.update_frame_info()
+            else:
+                QMessageBox.warning(self, "警告", "视频中未提取到帧")
+
+        except Exception as e:
+            QMessageBox.warning(self, "警告", f"加载视频帧时出错: {e}")
             return
-        
-        # 获取视频帧率
-        self.frame_rate = capture.get(cv2.CAP_PROP_FPS)
-
-        # 读取所有帧
-        while True:
-            ret, frame = capture.read()
-            if not ret:
-                break
-            # 转换BGR为RGB格式
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.video_frames.append(frame_rgb)
-
-        capture.release()
-
-        # 更新界面显示
-        if self.video_frames:
-            self.display_current_frame()
-            # 更新帧序号显示
-            self.update_frame_info()
-        else:
-            QMessageBox.warning(self, "警告", "视频中未提取到帧")
 
     def display_current_frame(self):
         """显示当前帧"""
@@ -366,9 +390,9 @@ class AnnotationTool(QMainWindow):
 
     def update_frame_info(self):
         """更新帧信息显示"""
+        self.video_id_value.setText(str(self.video_path.split('/')[-1]).split('.')[0])
         self.total_frame_count = len(self.video_frames)
         self.frame_num_value.setText(f"{self.current_frame_index + 1}/{self.total_frame_count}")
-        #TODO：是否为初始帧
 
     def save_project(self):
         """保存项目"""
@@ -394,6 +418,35 @@ class AnnotationTool(QMainWindow):
         """显示关于对话框"""
         # 具体实现代码暂不生成
         pass
+
+    # 标注工具组的按钮点击事件
+    def prev_frame(self):
+        """显示上一帧"""
+        # 检查是否有视频帧
+        if hasattr(self, 'video_frames') and self.video_frames:
+            # 检查是否已到达第一帧
+            if self.current_frame_index > 0:
+                self.current_frame_index -= 1
+                self.display_current_frame()
+                self.update_frame_info()
+            else:
+                 QMessageBox.information(self, "提示", "已经是第一帧")
+        else:
+            QMessageBox.information(self, "提示", "请先加载视频")
+
+    def next_frame(self):
+        """显示下一帧"""
+        # 检查是否有视频帧
+        if hasattr(self, 'video_frames') and self.video_frames:
+            # 检查是否已到达最后一帧
+            if self.current_frame_index < self.total_frames - 1:
+                self.current_frame_index += 1
+                self.display_current_frame()
+                self.update_frame_info()
+            else:
+                QMessageBox.information(self, "提示", "已经是最后一帧")
+        else:
+            QMessageBox.information(self, "提示", "请先加载视频")
 
     # 浏览并选择输出JSON路径
     def browse_output_json_path(self):
