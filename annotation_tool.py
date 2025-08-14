@@ -1,11 +1,14 @@
-from hmac import new
 import sys
 import cv2
+import json
+import os
+
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QPushButton, QLabel, QFileDialog, QSlider, QGroupBox, QFormLayout,
-                              QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QMessageBox)
-from PySide6.QtCore import Qt, QSize, QTimer, QEvent
+                              QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QMessageBox,QSizePolicy)
+from PySide6.QtCore import Qt, QSize, QTimer, QEvent,QPoint
 from PySide6.QtGui import QPixmap, QColor, QFont, QImage
+
 
 class AnnotationTool(QMainWindow):
     def __init__(self):
@@ -93,7 +96,7 @@ class AnnotationTool(QMainWindow):
         run_model_action.triggered.connect(self.run_model)
 
         export_frames_action = process_menu.addAction("导出帧")
-        export_frames_action.triggered.connect(self.export_frames)
+        export_frames_action.triggered.connect(self.export_annotated_video)
 
         # 帮助菜单
         help_menu = menu_bar.addMenu("帮助")
@@ -119,7 +122,7 @@ class AnnotationTool(QMainWindow):
 
         export_frames_btn = QPushButton("导出帧")
         export_frames_btn.setStyleSheet("QPushButton { padding: 4px 8px; border: none;}")
-        export_frames_btn.clicked.connect(self.export_frames)
+        export_frames_btn.clicked.connect(self.export_annotated_video)
         tool_bar.addWidget(export_frames_btn)
 
     def create_main_content(self):
@@ -190,10 +193,19 @@ class AnnotationTool(QMainWindow):
         left_layout.addWidget(info_group)
 
         # 视频显示区域
+        TODO: 视频显示区域在界面可缩放时保持原视频比例
         self.video_display = QLabel("视频显示区域")
+        # 居中文本
         self.video_display.setAlignment(Qt.AlignCenter)
-        self.video_display.setMinimumSize(640, 480)      # 初始4：3比例
+
+        self.video_display.setMinimumSize(688,444)      # 初始比例按业务需求决定
+
         self.video_display.setStyleSheet("background-color: #000000; color: white;")
+
+         # 设置尺寸策略，初始尺寸为700*525，可以根据软件窗口的大小进行调整
+        self.video_display.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        # 将视频显示区域居中放置在左侧布局中
         left_layout.addWidget(self.video_display)
 
         main_splitter.addWidget(left_panel)
@@ -236,7 +248,7 @@ class AnnotationTool(QMainWindow):
         props_group.setLayout(props_layout)
         annotation_layout.addWidget(props_group)
 
-        TODO: 添加标注框列表区域和滚动区域
+        TODO: 添加标注框列表滚动区域在多标注下需要滚动
         self.annotations_group = QGroupBox("标注框列表")
         self.annotations_layout = QVBoxLayout()
         self.annotations_group.setLayout(self.annotations_layout)
@@ -251,7 +263,6 @@ class AnnotationTool(QMainWindow):
         self.next_frame_btn = QPushButton("下一帧")
 
         # 连接按钮点击事件
-        TODO: 连接矩形工具按钮点击事件
         self.rect_tool_btn.clicked.connect(lambda: self.set_current_tool('rectangle'))
         # 连接颜色选择按钮
         self.color_btn.clicked.connect(self.select_color)
@@ -343,6 +354,12 @@ class AnnotationTool(QMainWindow):
 
         # 设置分割器初始大小
         main_splitter.setSizes([800, 400])
+    
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        
+        # 确保视频显示区域居中
+        self.video_display.parent().layout().setAlignment(self.video_display, Qt.AlignCenter)
 
     def load_video(self):
         """加载视频文件"""
@@ -422,14 +439,8 @@ class AnnotationTool(QMainWindow):
             display_width = self.video_display.width()
             display_height = self.video_display.height()
 
-            # 计算缩放比例
-            scale_factor = min(display_width / width, display_height / height)
-            # 保持宽高比
-            new_width = int(width * scale_factor)
-            new_height = int(height * scale_factor)
-
             q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
-            scaled_image = q_image.scaled(new_width, new_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled_image = q_image.scaled(display_width,display_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
             self.video_display.setPixmap(QPixmap.fromImage(scaled_image))
 
@@ -443,11 +454,29 @@ class AnnotationTool(QMainWindow):
         self.frame_num_value.setText(f"{self.current_frame_index + 1}/{self.total_frame_count}")
         self.fps_value.setText(str(self.frame_rate))
 
-
+    # 保存项目标注信息到Json文件
     def save_project(self):
-        """保存项目"""
-        # 具体实现代码暂不生成
-        pass
+        """保存标注信息到Json文件"""
+        # 确保输出目录存在
+        output_dir = os.path.dirname(self.config['output_json_path'])
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        # 准备保存的数据
+        project_data = {
+            'video_path': self.video_path,
+            'frame_rate': self.frame_rate,
+            'total_frames': self.total_frames,
+            'annotations': self.annotations
+        }
+
+        # 保存到Json文件
+        try:
+            with open(self.config['output_json_path'], 'w', encoding='utf-8') as f:
+                json.dump(project_data, f, ensure_ascii=False, indent=4)
+            QMessageBox.information(self, "成功", "项目已成功保存")
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"保存项目时出错: {e}")
 
     def open_preferences(self):
         """打开首选项设置"""
@@ -459,10 +488,46 @@ class AnnotationTool(QMainWindow):
         # 具体实现代码暂不生成
         pass
 
-    def export_frames(self):
-        """导出视频帧"""
-        # 具体实现代码暂不生成
-        pass
+    def export_annotated_video(self):
+        """导出带有标注的视频帧"""
+        if not self.video_frames:
+            QMessageBox.warning(self, "警告", "请先加载视频")
+            return
+        
+        try:
+            # 获取视频信息
+            height, width, _ = self.video_frames[0].shape
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(self.config['output_video_path'], fourcc, self.frame_rate, (width, height))
+
+            # 逐帧处理
+            for i, frame in enumerate(self.video_frames):
+                # 复制帧
+                annotated_frame = frame.copy()
+                # 绘制标注
+                if i in self.annotations:
+                    for annotation in self.annotations[i]:
+                        color = annotation['color']
+                        # 绘制矩形
+                        cv2.rectangle(annotated_frame, (annotation['x1'], annotation['y1']), 
+                                      (annotation['x2'], annotation['y2']), color, 2)
+                        # 绘制标签
+                        label_text = f"{annotation['id']}. {annotation['label']}"
+                        cv2.putText(annotated_frame, label_text, (annotation['x1'], annotation['y1']-10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                        # 绘制文本信息
+                        if annotation['text']:
+                            text_text = f"{annotation['text']}"
+                            cv2.putText(annotated_frame, text_text, (annotation['x1'], annotation['y2']+20), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                # 转换为BGR格式并写入视频
+                out.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
+
+            # 释放资源
+            out.release()
+            QMessageBox.information(self, "成功", f"带标注的视频已导出到 {self.config['output_video_path']}")
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"导出视频时出错: {str(e)}")
 
     def show_about(self):
         """显示关于对话框"""
@@ -494,27 +559,83 @@ class AnnotationTool(QMainWindow):
         if obj is self.video_display and self.current_tool == 'rectangle':
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 # 鼠标按下，开始绘制
-                self.drawing = True
-                self.start_point = event.position().toPoint()
-                self.end_point = self.start_point
+                mapped_point = self.map_to_original_frame(event.position().toPoint())
+                if mapped_point.x() != -1 and mapped_point.y() != -1:
+                    self.drawing = True
+                    self.start_point = mapped_point
+                    self.end_point = mapped_point
                 return True
             elif event.type() == QEvent.MouseMove and self.drawing:
                 # 鼠标移动，更新结束点
-                self.end_point = event.position().toPoint()
-                # 重绘当前帧
-                self.display_current_frame()
+                mapped_point = self.map_to_original_frame(event.position().toPoint())
+                if mapped_point.x() != -1 and mapped_point.y() != -1:
+                    self.end_point = mapped_point
+                    # 重绘当前帧
+                    self.display_current_frame()
                 return True
             elif event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton and self.drawing:
                 # 鼠标释放，结束绘制
                 self.drawing = False
-                self.end_point = event.position().toPoint()
-                # 确保起始点和结束点不同
-                if self.start_point != self.end_point:
-                    self.add_annotation()
+                mapped_point = self.map_to_original_frame(event.position().toPoint())
+                if mapped_point.x() != -1 and mapped_point.y() != -1:
+                    self.end_point = mapped_point
+                    # 确保起始点和结束点不同
+                    if self.start_point != self.end_point:
+                        self.add_annotation()
                 # 重绘当前帧
                 self.display_current_frame()
                 return True
         return super().eventFilter(obj, event)
+
+    # 将显示窗口的坐标映射到原始视频帧的坐标
+    def map_to_original_frame(self, point):
+        """将显示窗口中的坐标映射到原始视频帧的坐标"""
+        if not self.video_frames or self.current_frame_index < 0 or self.current_frame_index >= len(self.video_frames):
+            return point
+        
+        # 获取原始视频帧的尺寸
+        original_height, original_width = self.video_frames[self.current_frame_index].shape[:2]
+        
+        # 获取显示窗口的尺寸
+        display_width = self.video_display.width()
+        display_height = self.video_display.height()
+        
+        # 计算实际显示的视频尺寸（考虑宽高比）
+        if original_width / original_height > display_width / display_height:
+            # 视频宽度是限制因素
+            display_video_width = display_width
+            display_video_height = display_width * original_height / original_width
+        else:
+            # 视频高度是限制因素
+            display_video_height = display_height
+            display_video_width = display_height * original_width / original_height
+        
+        # 计算缩放比例
+        scale = display_video_width / original_width
+        
+        # 计算显示窗口中的偏移量
+        offset_x_display = (display_width - display_video_width) / 2
+        offset_y_display = (display_height - display_video_height) / 2
+        
+        # 检查鼠标坐标是否在视频显示区域内
+        if (point.x() < offset_x_display or point.x() >= offset_x_display + display_video_width or
+            point.y() < offset_y_display or point.y() >= offset_y_display + display_video_height):
+            # 鼠标在视频显示区域外，返回无效坐标
+            return QPoint(-1, -1)
+        
+        # 调整鼠标坐标，减去显示窗口中的偏移量
+        adjusted_x = point.x() - offset_x_display
+        adjusted_y = point.y() - offset_y_display
+        
+        # 将调整后的坐标映射到原始视频帧坐标
+        mapped_x = int(adjusted_x / scale)
+        mapped_y = int(adjusted_y / scale)
+        
+        # 确保映射后的坐标在原始视频帧范围内
+        mapped_x = max(0, min(mapped_x, original_width - 1))
+        mapped_y = max(0, min(mapped_y, original_height - 1))
+        
+        return QPoint(mapped_x, mapped_y)
 
     # 添加标注框
     def add_annotation(self):
@@ -620,7 +741,6 @@ class AnnotationTool(QMainWindow):
                             sub_widget.hide()
 
         # 根据每一帧的控件信息添加当前帧的控件
-        #TODO: 需要修改根据标注框的id来获取标注框的标签
         if self.current_frame_index in self.annotation_widgets:
             for item in self.annotation_widgets[self.current_frame_index]:
                 text_input = item['weight']
@@ -707,7 +827,6 @@ class AnnotationTool(QMainWindow):
         if file_path:
             self.config['output_video_path'] = file_path
             self.output_video_path_input.setText(file_path)
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
