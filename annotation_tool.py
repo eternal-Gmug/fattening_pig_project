@@ -2,13 +2,13 @@ import sys
 import cv2
 import json
 import os
-
+import time
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QPushButton, QLabel, QFileDialog, QSlider, QGroupBox, QFormLayout,
                               QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QMessageBox,QSizePolicy)
 from PySide6.QtCore import Qt, QSize, QTimer, QEvent,QPoint
 from PySide6.QtGui import QPixmap, QColor, QFont, QImage
-
+from ultralytics import YOLO
 
 class AnnotationTool(QMainWindow):
     def __init__(self):
@@ -21,6 +21,7 @@ class AnnotationTool(QMainWindow):
         self.current_frame_index = 0   #当前显示的帧索引
         self.total_frame_count = 0     #视频总帧数
         self.frame_rate = 30           #视频的帧率
+        self.key_frames = {}           #存储视频的关键帧索引
         # 标注相关变量
         self.annotations = {}          # 存储所有标注信息
         self.annotation_widgets = {}   # 存储所有标注框的文本输入框{frameindex:[{annotationid:widget},{annotationid:widget}]}
@@ -30,13 +31,16 @@ class AnnotationTool(QMainWindow):
         self.end_point = None          # 绘制结束点
         self.current_color = QColor(Qt.red) # 当前标注的颜色（默认为红色）
         self.current_thickness = 2     # 当前标注的线宽
+        self.dragging = False          # 是否正在拖动标注
+        self.dragging_annotation = None # 当前正在拖动的标注
+        self.drag_offset = QPoint()    # 拖动偏移量
 
         # 初始化配置
         self.config = {
             'output_json_path': './output',
             'output_video_path': './processed_videos',
             'background_color': '#f0f0f0',
-            'model_path': ''
+            'model_path': './yolov8n.pt'
         }
 
         # 创建主部件和布局
@@ -177,28 +181,32 @@ class AnnotationTool(QMainWindow):
         top_info_layout.addWidget(self.fps_value)
         top_info_layout.addStretch()
         
-        # 第二行：是否为起始帧
-        start_frame_layout = QHBoxLayout()
+        # 第二行：是否为关键帧
+        essential_frame_layout = QHBoxLayout()
         
-        self.start_frame_label = QLabel("是否为起始帧: ")
-        self.start_frame_label.setFont(font)
-        self.start_frame_checkbox = QCheckBox()
-        
-        start_frame_layout.addWidget(self.start_frame_label)
-        start_frame_layout.addWidget(self.start_frame_checkbox)
-        start_frame_layout.addStretch()
+        self.essential_frame_label = QLabel("是否为关键帧: ")
+        self.essential_frame_label.setFont(font)
+        # 关键帧复选框能够根据当前帧是否为关键帧进行切换
+        self.essential_frame_checkbox = QCheckBox()
+        self.essential_frame_checkbox.setChecked(self.key_frames.get(self.current_frame_index, False))
+        # 关键帧复选框的状态改变时，更新当前帧的关键帧状态，并保存每一帧的关键帧状态
+        self.essential_frame_checkbox.stateChanged.connect(self.update_essential_frame_state)
+
+        essential_frame_layout.addWidget(self.essential_frame_label)
+        essential_frame_layout.addWidget(self.essential_frame_checkbox)
+        essential_frame_layout.addStretch()
         
         info_layout.addLayout(top_info_layout)
-        info_layout.addLayout(start_frame_layout)
+        info_layout.addLayout(essential_frame_layout)
         left_layout.addWidget(info_group)
 
         # 视频显示区域
-        TODO: 视频显示区域在界面可缩放时保持原视频比例
+        #TODO: 视频显示区域在界面可缩放时保持原视频比例
         self.video_display = QLabel("视频显示区域")
         # 居中文本
         self.video_display.setAlignment(Qt.AlignCenter)
 
-        self.video_display.setMinimumSize(688,444)      # 初始比例按业务需求决定
+        self.video_display.setMinimumSize(800,450)      # 初始比例按业务需求决定
 
         self.video_display.setStyleSheet("background-color: #000000; color: white;")
 
@@ -222,9 +230,11 @@ class AnnotationTool(QMainWindow):
         tool_group = QGroupBox("标注工具")
         tool_layout = QHBoxLayout()
 
+        self.mouse_btn = QPushButton("鼠标拖动")
         self.rect_tool_btn = QPushButton("矩形")
         self.point_tool_btn = QPushButton("点")
 
+        tool_layout.addWidget(self.mouse_btn)
         tool_layout.addWidget(self.rect_tool_btn)
         tool_layout.addWidget(self.point_tool_btn)
 
@@ -248,7 +258,7 @@ class AnnotationTool(QMainWindow):
         props_group.setLayout(props_layout)
         annotation_layout.addWidget(props_group)
 
-        TODO: 添加标注框列表滚动区域在多标注下需要滚动
+        #TODO: 添加标注框列表滚动区域在多标注下需要滚动
         self.annotations_group = QGroupBox("标注框列表")
         self.annotations_layout = QVBoxLayout()
         self.annotations_group.setLayout(self.annotations_layout)
@@ -268,6 +278,8 @@ class AnnotationTool(QMainWindow):
         self.color_btn.clicked.connect(self.select_color)
         # 连接点工具按钮点击事件
         self.point_tool_btn.clicked.connect(lambda: self.set_current_tool('point'))
+        # 连接鼠标拖动按钮点击事件
+        self.mouse_btn.clicked.connect(lambda: self.set_current_tool('mouse'), self.mouse_drag)
 
         self.reset_btn.clicked.connect(self.reset_annotation)
         self.prev_frame_btn.clicked.connect(self.prev_frame)
@@ -361,23 +373,24 @@ class AnnotationTool(QMainWindow):
         # 确保视频显示区域居中
         self.video_display.parent().layout().setAlignment(self.video_display, Qt.AlignCenter)
 
+    # 从本地文件夹加载视频
     def load_video(self):
         """加载视频文件"""
         # 从本地文件夹加载视频
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择视频文件", "", "Video Files (*.mp4 *.avi *.mov);;All Files (*)"
+            self, "选择视频或图片文件", "", "Media Files (*.mp4 *.avi *.mov *.jpg *.jpeg *.png *.bmp);;All Files (*)"
         )
         if file_path:
             self.video_path = file_path
             self.video_id_value.setText(str(self.video_path.split('/')[-1]))
             self.load_video_frames()
     
+    # 将视频切换成图片帧
     def load_video_frames(self):
         """按帧率从视频中提取帧"""
         # 清空之前的帧数据
         self.video_frames = []
         self.current_frame_index = 0
-
         try:
             # 打开视频文件
             cap = cv2.VideoCapture(self.video_path)
@@ -387,37 +400,91 @@ class AnnotationTool(QMainWindow):
             # 读取视频信息
             self.frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
             self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            #TODO: 这里需要导入yolov8模型实现视频对视频帧的识别，或导入自定义模型
+            # 加载yolov8模型
+            try:
+                self.model = YOLO("yolov8n.pt")
+                # 可以加载自定义模型
+            except Exception as e:
+                QMessageBox.warning(self, "模型加载错误", f"无法加载yolov8模型: {e}\n将使用空检测结果")
+                print(e)
+                self.model = None
+                
             # 按帧率提取帧
+            frame_idx = 0
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
+
                 # 转换为RGB格式
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
+                # 存储原始帧
                 self.video_frames.append(frame)
+
+                # 使用yolov8模型进行识别
+                if self.model is not None:
+                    # 只检测猪类（COCO数据集中猪的类别ID是13），这里是单帧图像
+                    results = self.model.predict(frame, classes=[16], conf=0.5)
+                    # 处理检测结果
+                    frame_annotation = []
+                    boxs = results[0].boxes
+                    for i,box in enumerate(boxs):
+                        # 获取标注框的坐标
+                        x1,y1,x2,y2 = map(int,box.xyxy[0])
+                        # 获取置信度
+                        confidence = float(box.conf[0])
+                        # 构建标注信息
+                        annotation ={
+                            'id': i + 1,
+                            'x1': x1,
+                            'y1': y1,
+                            'x2': x2,
+                            'y2': y2,
+                            'confidence': confidence,
+                            'text': '',
+                            'color':(0,255,0)
+                        }
+                        frame_annotation.append(annotation)
+                    
+                    # 保存标注信息
+                    if frame_annotation:
+                        self.annotations[frame_idx] = frame_annotation
+
+                    frame_idx += 1
+
             cap.release()
             # 更新界面显示
             if self.video_frames:
                 self.display_current_frame()
                 self.update_frame_info()
+                # TODO: 这里需要根据yolov8的检测结果，为每一个检测框添加一个文本框(使用函数调用)
+
+                # 如果有模型检测结果，显示提示
+                if self.annotations:
+                    #detected_count = sum(len(anns) for anns in self.annotations.values())
+                    #QMessageBox.information(self, "检测结果", f"检测到 {detected_count} 只猪")
+                    # 输出检测完成
+                    QMessageBox.information(self, "检测完成", f"检测到 {frame_idx} 帧")
             else:
                 QMessageBox.warning(self, "警告", "视频中未提取到帧")
 
         except Exception as e:
             QMessageBox.warning(self, "警告", f"加载视频帧时出错: {e}")
+            print(e)
             return
 
     # 显示当前图片帧（⭐⭐⭐⭐⭐）
     def display_current_frame(self):
         """显示当前帧，并绘制标注"""
+        #TODO:可以直接从已经被yolov8处理过的帧提取结果
         if 0 <= self.current_frame_index < len(self.video_frames):
             frame = self.video_frames[self.current_frame_index].copy()
             # 转换为QImage
             height, width, channel = frame.shape
             bytes_per_line = 3 * width
 
-            # 绘制已有的标注
+            # 绘制已有的标注（包含yolov8识别结果）
             if self.current_frame_index in self.annotations:
                 for annotation in self.annotations[self.current_frame_index]:
                     # 绘制矩形
@@ -435,6 +502,12 @@ class AnnotationTool(QMainWindow):
                               (self.end_point.x(), self.end_point.y()), 
                               (self.current_color.red(), self.current_color.green(), self.current_color.blue()), 2)
             
+            # 绘制正在移动的标注框
+            if self.dragging_annotation:
+                cv2.rectangle(frame, (self.dragging_annotation['x1'], self.dragging_annotation['y1']), 
+                              (self.dragging_annotation['x2'], self.dragging_annotation['y2']), 
+                              (self.current_color.red(), self.current_color.green(), self.current_color.blue()), 2)
+
             # 获取视频显示区域的大小
             display_width = self.video_display.width()
             display_height = self.video_display.height()
@@ -447,20 +520,27 @@ class AnnotationTool(QMainWindow):
             # 更新标注组件
             self.update_annotation_widgets()
 
+    # 更新当前帧的图片信息（视频名称、总帧数、当前帧数、是否为关键帧、fps）
     def update_frame_info(self):
         """更新帧信息显示"""
         self.video_id_value.setText(str(self.video_path.split('/')[-1]).split('.')[0])
         self.total_frame_count = len(self.video_frames)
         self.frame_num_value.setText(f"{self.current_frame_index + 1}/{self.total_frame_count}")
         self.fps_value.setText(str(self.frame_rate))
+        self.essential_frame_checkbox.setChecked(self.key_frames.get(self.current_frame_index, False))
 
     # 保存项目标注信息到Json文件
     def save_project(self):
         """保存标注信息到Json文件"""
-        # 确保输出目录存在
-        output_dir = os.path.dirname(self.config['output_json_path'])
+        # 确保输出目录output存在
+        output_dir = self.config['output_json_path']
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
+
+        # 在输出目录以下生成一个json文件，名称为视频名称+当前时间戳.json格式
+        timestamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
+        json_file_name = self.video_path.split('/')[-1].split('.')[0] + '_' + timestamp + '.json'
+        json_file_path = os.path.join(output_dir, json_file_name)
 
         # 准备保存的数据
         project_data = {
@@ -472,7 +552,7 @@ class AnnotationTool(QMainWindow):
 
         # 保存到Json文件
         try:
-            with open(self.config['output_json_path'], 'w', encoding='utf-8') as f:
+            with open(json_file_path, 'w', encoding='utf-8') as f:
                 json.dump(project_data, f, ensure_ascii=False, indent=4)
             QMessageBox.information(self, "成功", "项目已成功保存")
         except Exception as e:
@@ -534,11 +614,20 @@ class AnnotationTool(QMainWindow):
         # 具体实现代码暂不生成
         pass
 
+    # 更新当前帧的关键帧状态
+    def update_essential_frame_state(self):
+        """更新当前帧的关键帧状态"""
+        # 获取当前帧的关键帧状态
+        is_essential = self.essential_frame_checkbox.isChecked()
+        # 更新当前帧的关键帧状态
+        self.key_frames[self.current_frame_index] = is_essential
+
     # 设置当前标注工具
     def set_current_tool(self,tool_type):
         """设置当前标注工具"""
         self.current_tool = tool_type
         # 更新按钮样式以显示当前选中的样式
+        self.mouse_btn.setStyleSheet("background-color: lightblue;" if tool_type == 'mouse' else "")
         self.rect_tool_btn.setStyleSheet("background-color: lightblue;" if tool_type == 'rectangle' else "")
         self.point_tool_btn.setStyleSheet("background-color: lightblue;" if tool_type == 'point' else "")
         # 启用视频显示区域的鼠标跟踪
@@ -553,9 +642,10 @@ class AnnotationTool(QMainWindow):
         if color.isValid():
             self.current_color = color
 
-    # 事件过滤器
+    # 事件过滤器,实现鼠标拖动标注框
     def eventFilter(self,obj,event):
         """事件过滤器，用于捕获视频显示区域的鼠标事件"""
+        # 在图片显示区域下绘制标注框
         if obj is self.video_display and self.current_tool == 'rectangle':
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 # 鼠标按下，开始绘制
@@ -585,6 +675,38 @@ class AnnotationTool(QMainWindow):
                 # 重绘当前帧
                 self.display_current_frame()
                 return True
+        
+        # 在图片显示区域下实现鼠标拖动标注框
+        if obj is self.video_display and self.current_tool == 'mouse':
+            # 鼠标按下，检查是否在标注框内
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                mapped_point = self.map_to_original_frame(event.position().toPoint())
+                if mapped_point.x() != -1 and mapped_point.y() != -1:
+                    # 检查当前帧是否有标注框
+                    if self.current_frame_index in self.annotations:
+                        self.is_mouse_in_annotation(mapped_point)
+                return True
+            # 鼠标移动，拖动标注框
+            elif event.type() == QEvent.MouseMove and self.dragging:
+                mapped_point = self.map_to_original_frame(event.position().toPoint())
+                if mapped_point.x() != -1 and mapped_point.y() != -1:
+                    # 计算新的标注框位置
+                    self.mouse_drag(mapped_point)
+                    # 重绘当前帧
+                    self.display_current_frame()
+                return True
+
+            # 鼠标释放，结束拖动，更新标注框位置信息
+            elif event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton and self.dragging:
+                self.dragging = False
+                # 更新当前帧的标注框位置
+                self.update_annotation_position()
+                # 清除当前拖动的标注框
+                self.dragging_annotation = None
+                # 重绘当前帧
+                self.display_current_frame()
+                return True
+
         return super().eventFilter(obj, event)
 
     # 将显示窗口的坐标映射到原始视频帧的坐标
@@ -637,6 +759,39 @@ class AnnotationTool(QMainWindow):
         
         return QPoint(mapped_x, mapped_y)
 
+    # 实现鼠标拖动标注框
+    def mouse_drag(self,mapped_point):
+        # 计算新的标注框位置
+        new_x1 = mapped_point.x() - self.drag_offset.x()
+        new_y1 = mapped_point.y() - self.drag_offset.y()
+        width = self.dragging_annotation['x2'] - self.dragging_annotation['x1']
+        height = self.dragging_annotation['y2'] - self.dragging_annotation['y1']
+        new_x2 = new_x1 + width
+        new_y2 = new_y1 + height
+        # 确保标注框不超出图片帧边界
+        frame_height,frame_width = self.video_frames[self.current_frame_index].shape[:2]
+        new_x1 = max(0, min(new_x1, frame_width - 1))
+        new_y1 = max(0, min(new_y1, frame_height - 1))
+        new_x2 = max(0, min(new_x2, frame_width - 1))
+        new_y2 = max(0, min(new_y2, frame_height - 1))
+        # 更新标注框位置
+        self.dragging_annotation['x1'] = new_x1
+        self.dragging_annotation['y1'] = new_y1
+        self.dragging_annotation['x2'] = new_x2
+        self.dragging_annotation['y2'] = new_y2
+
+    # 判断当前鼠标是否在标注框内
+    def is_mouse_in_annotation(self,mapped_point):
+        for anno in self.annotations[self.current_frame_index]:
+            x1, y1, x2, y2 = anno['x1'], anno['y1'], anno['x2'], anno['y2']
+            if x1 <= mapped_point.x() <= x2 and y1 <= mapped_point.y() <= y2:
+                self.dragging = True
+                # 记录当前拖动的标注
+                self.dragging_annotation = anno
+                # 记录当前鼠标位置与左上角的偏移量
+                self.drag_offset = mapped_point - QPoint(x1, y1)
+                break
+
     # 添加标注框
     def add_annotation(self):
         """添加标注框"""
@@ -679,7 +834,7 @@ class AnnotationTool(QMainWindow):
         # 清空标签输入框
         #self.label_input.clear()
         
-    # 添加标注框的文本输入框
+    # TODO:添加标注框的文本输入框，当使用自动化标注后需要改造
     def add_annotation_widget(self, annotation_id, label):
         """添加标注框的文本输入框"""
         # 确保当前帧有控件列表
@@ -719,6 +874,11 @@ class AnnotationTool(QMainWindow):
                     # 同步更新标注信息的text
                     self.annotations[self.current_frame_index][annotation_id-1]['text'] = text
                     break
+
+    # 更新当前帧的标注框信息（拖动标注框）
+    def update_annotation_position(self):
+        """更新当前帧的标注框信息"""
+        self.annotations[self.current_frame_index][self.dragging_annotation['id']-1] = self.dragging_annotation
 
     # 更新标注组件
     def update_annotation_widgets(self):
@@ -778,6 +938,7 @@ class AnnotationTool(QMainWindow):
         else:
             return
 
+    # 切换到上一帧
     def prev_frame(self):
         """显示上一帧"""
         # 检查是否有视频帧
@@ -792,6 +953,7 @@ class AnnotationTool(QMainWindow):
         else:
             QMessageBox.information(self, "提示", "请先加载视频")
 
+    # 切换到下一帧
     def next_frame(self):
         """显示下一帧"""
         # 检查是否有视频帧
@@ -828,6 +990,7 @@ class AnnotationTool(QMainWindow):
             self.config['output_video_path'] = file_path
             self.output_video_path_input.setText(file_path)
 
+# 主运行函数
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = AnnotationTool()
