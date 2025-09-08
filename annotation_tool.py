@@ -1,8 +1,9 @@
 import sys
 import cv2
-import json
 import os
 import time
+import json
+import onnxdealA
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QPushButton, QLabel, QFileDialog, QSlider, QGroupBox, QFormLayout,
                               QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QMessageBox,QSizePolicy)
@@ -29,7 +30,7 @@ class AnnotationTool(QMainWindow):
         self.drawing = False           # 是否正在绘制标注
         self.start_point = None        # 绘制开始点
         self.end_point = None          # 绘制结束点
-        self.current_color = QColor(Qt.red) # 当前标注的颜色（默认为红色）
+        self.current_color = QColor(Qt.green) # 当前手动标注的颜色（默认为绿色）
         self.current_thickness = 2     # 当前标注的线宽
         self.dragging = False          # 是否正在拖动标注
         self.dragging_annotation = None # 当前正在拖动的标注
@@ -37,10 +38,12 @@ class AnnotationTool(QMainWindow):
 
         # 初始化配置
         self.config = {
-            'output_json_path': './output',
+            'default_input_path': './input_videos',
+            'output_txt_path': './output',
             'output_video_path': './processed_videos',
             'background_color': '#f0f0f0',
-            'model_path': './yolov8n.pt'
+            'model_path': 'model/pig_gesture_best.onnx',
+            'classes_path': 'model/classes.txt'
         }
 
         # 创建主部件和布局
@@ -112,7 +115,7 @@ class AnnotationTool(QMainWindow):
         tool_bar = self.addToolBar("工具")
         tool_bar.setMovable(False)
 
-        load_video_btn = QPushButton("加载视频")
+        load_video_btn = QPushButton("加载文件")
         load_video_btn.setStyleSheet("QPushButton { padding: 4px 8px; border: none;}")
         load_video_btn.clicked.connect(self.load_video)
         tool_bar.addWidget(load_video_btn)
@@ -326,19 +329,25 @@ class AnnotationTool(QMainWindow):
         output_tab = QWidget()
         output_layout = QVBoxLayout(output_tab)
 
-        output_group = QGroupBox("输出设置")
+        output_group = QGroupBox("输入输出设置")
         output_form_layout = QFormLayout()
 
-        self.output_json_path_input = QLineEdit(self.config['output_json_path'])
-        self.output_json_path_input.setReadOnly(True)
-        self.browse_output_btn = QPushButton("更改输出Json路径")
+        self.video_path_input = QLineEdit(self.config['default_input_path'])
+        self.video_path_input.setReadOnly(True)
+        self.browse_input_btn = QPushButton("更改输入图片集路径")
+        self.browse_input_btn.setStyleSheet("border : 1px solid black;")
+        self.browse_input_btn.clicked.connect(self.browse_input_video_path)
+
+        self.output_txt_path_input = QLineEdit(self.config['output_txt_path'])
+        self.output_txt_path_input.setReadOnly(True)
+        self.browse_output_btn = QPushButton("更改输出参数文件路径")
         self.browse_output_btn.setStyleSheet("border : 1px solid black;")
-        self.browse_output_btn.clicked.connect(self.browse_output_json_path)
+        self.browse_output_btn.clicked.connect(self.browse_output_directory)
 
         self.output_video_path_input = QLineEdit(self.config['output_video_path'])
         self.output_video_path_input.setReadOnly(True)
-        self.browse_output_video_btn = QPushButton("更改输出视频路径")
-        self.browse_output_video_btn.clicked.connect(self.browse_output_video_path)
+        self.browse_output_video_btn = QPushButton("更改输出标注视频帧路径")
+        self.browse_output_video_btn.clicked.connect(self.browse_video_directory)
         
         '''
         self.frame_format_combo = QComboBox()
@@ -348,9 +357,11 @@ class AnnotationTool(QMainWindow):
         self.frame_quality_slider.setValue(90)
         '''
 
-        output_form_layout.addRow("输出json路径:", self.output_json_path_input)
+        output_form_layout.addRow("输入图片集路径:", self.video_path_input)
+        output_form_layout.addRow("", self.browse_input_btn)
+        output_form_layout.addRow("输出参数文件路径:", self.output_txt_path_input)
         output_form_layout.addRow("", self.browse_output_btn)
-        output_form_layout.addRow("输出视频路径:", self.output_video_path_input)
+        output_form_layout.addRow("输出标注视频图像帧路径:", self.output_video_path_input)
         output_form_layout.addRow("", self.browse_output_video_btn)
 
         '''
@@ -362,7 +373,7 @@ class AnnotationTool(QMainWindow):
         output_layout.addWidget(output_group)
 
         output_layout.addStretch()
-        right_panel.addTab(output_tab, "输出")
+        right_panel.addTab(output_tab, "输入与输出")
 
         # 设置分割器初始大小
         main_splitter.setSizes([800, 400])
@@ -376,7 +387,18 @@ class AnnotationTool(QMainWindow):
     # 从本地文件夹加载视频
     def load_video(self):
         """加载视频文件"""
-        # 从本地文件夹加载视频
+        # 先判断默认输入文件夹是否是图片数据集
+        default_input_path = self.config['default_input_path']
+        if os.path.exists(default_input_path):
+            files = os.listdir(default_input_path)
+            # 必须全部都是图片文件才能加载
+            if all(file.endswith(('.jpg', '.jpeg', '.png')) for file in files):
+                # 全部是图片文件，直接加载
+                self.video_path = default_input_path
+                self.video_id_value.setText(str(self.video_path.split('/')[-1]))
+                self.load_default_atlas()
+                return
+        # 如果默认输入文件夹没有视频文件，从本地文件夹加载视频
         file_path, _ = QFileDialog.getOpenFileName(
             self, "选择视频或图片文件", "", "Media Files (*.mp4 *.avi *.mov *.jpg *.jpeg *.png *.bmp);;All Files (*)"
         )
@@ -385,6 +407,11 @@ class AnnotationTool(QMainWindow):
             self.video_id_value.setText(str(self.video_path.split('/')[-1]))
             self.load_video_frames()
     
+    # TODO: 加载图片数据集功能
+    def load_default_atlas(self):
+        QMessageBox.information(self, "提示", "当前功能未实现")
+        pass
+
     # 将视频切换成图片帧
     def load_video_frames(self):
         """按帧率从视频中提取帧"""
@@ -400,66 +427,75 @@ class AnnotationTool(QMainWindow):
             # 读取视频信息
             self.frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
             self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            #TODO: 这里需要导入yolov8模型实现视频对视频帧的识别，或导入自定义模型
-            # 加载yolov8模型
-            try:
-                self.model = YOLO("yolov8n.pt")
-                # 可以加载自定义模型
-            except Exception as e:
-                QMessageBox.warning(self, "模型加载错误", f"无法加载yolov8模型: {e}\n将使用空检测结果")
-                print(e)
-                self.model = None
-                
-            # 按帧率提取帧
-            frame_idx = 0
+            
+            # 判断是否有指定的模型
+            if self.config['model_path'] is None:
+                QMessageBox.warning(self, "警告", "请指定模型路径")
+                return
+
+            # 存储模型识别的标注信息
+            results = []
+            # 1. 先将视频帧转换为图片帧
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
-
-                # 转换为RGB格式
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                # 转换成RGB格式
+                frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
                 # 存储原始帧
                 self.video_frames.append(frame)
+            cap.release()
 
-                # 使用yolov8模型进行识别
-                if self.model is not None:
-                    # 只检测猪类（COCO数据集中猪的类别ID是13），这里是单帧图像
-                    results = self.model.predict(frame, classes=[16], conf=0.5)
-                    # 处理检测结果
-                    frame_annotation = []
-                    boxs = results[0].boxes
-                    for i,box in enumerate(boxs):
-                        # 获取标注框的坐标
-                        x1,y1,x2,y2 = map(int,box.xyxy[0])
-                        # 获取置信度
-                        confidence = float(box.conf[0])
-                        # 构建标注信息
-                        annotation ={
-                            'id': i + 1,
-                            'x1': x1,
-                            'y1': y1,
-                            'x2': x2,
-                            'y2': y2,
-                            'confidence': confidence,
-                            'text': '',
-                            'color':(0,255,0)
-                        }
-                        frame_annotation.append(annotation)
+            # 2.使用Onnx脚本提取视频帧自动标注的信息
+            for frame in self.video_frames:
+                # 返回一个列表，每个列表包含自动标注框的信息
+                # 返回的格式：[{'cls': 0, 'xyxy': [x1,y1,x2,y2], 'score': 0.8},{'cls': 1, 'xyxy': [x1,y1,x2,y2], 'score': 0.8}]
+                frame_temp = frame.copy()
+                result = onnxdealA.main(self.config['model_path'],frame_temp,self.config['classes_path'])
+                # 保存进results
+                results.append(result)
+
+            if results is None:
+                QMessageBox.warning(self, "警告", "无法识别到物体")
+                return
+            
+            # 3.根据识别到的标注信息进行保存
+            frame_idx = 0
+            for result in results:
+                # 处理检测结果
+                frame_annotation = []
+                for i,box in enumerate(result):
+                    # 获取标注框的坐标，将列表结构拆分成四个变量
+                    x1,y1,x2,y2 = box['xyxy']
+                    # 获取置信度
+                    #confidence = float(box.conf[0])
+                    # 获取检测类别
+                    class_id = box['cls']
+                    # 构建标注信息
+                    annotation ={
+                        'id': i + 1,
+                        'class_id': class_id,
+                        'x1': x1,
+                        'y1': y1,
+                        'x2': x2,
+                        'y2': y2,
+                        #'confidence': confidence,
+                        'text': '',
+                        'color':(0,255,0)                # 自动化标注框默认是绿色
+                    }
+                    frame_annotation.append(annotation)
                     
                     # 保存标注信息
                     if frame_annotation:
                         self.annotations[frame_idx] = frame_annotation
 
-                    frame_idx += 1
+                frame_idx += 1
 
-            cap.release()
             # 更新界面显示
             if self.video_frames:
                 self.display_current_frame()
                 self.update_frame_info()
-                # TODO: 这里需要根据yolov8的检测结果，为每一个检测框添加一个文本框(使用函数调用)
-
+                # TODO: 这里需要根据yolov8的检测结果，为每一个检测框添加一个文本框(使用函数调用)，待讨论，看是否需要添加信息框
                 # 如果有模型检测结果，显示提示
                 if self.annotations:
                     #detected_count = sum(len(anns) for anns in self.annotations.values())
@@ -529,32 +565,82 @@ class AnnotationTool(QMainWindow):
         self.fps_value.setText(str(self.frame_rate))
         self.essential_frame_checkbox.setChecked(self.key_frames.get(self.current_frame_index, False))
 
-    # 保存项目标注信息到Json文件
+    # 保存项目标注信息到txt文件
     def save_project(self):
-        """保存标注信息到Json文件"""
-        # 确保输出目录output存在
-        output_dir = self.config['output_json_path']
+        """保存标注信息到txt文件"""
+        # 获取视频名称作为文件夹名
+        video_name = os.path.splitext(os.path.basename(self.video_path))[0]
+        # 确保输出目录存在，使用视频名称加时间戳作为子文件夹
+        timestamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
+        # 创建输出目录下的二级目录
+        file_name = video_name + '_' + timestamp
+        output_dir = os.path.join(self.config['output_txt_path'], file_name)
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        # 在输出目录以下生成一个json文件，名称为视频名称+当前时间戳.json格式
-        timestamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
-        json_file_name = self.video_path.split('/')[-1].split('.')[0] + '_' + timestamp + '.json'
-        json_file_path = os.path.join(output_dir, json_file_name)
-
         # 准备保存的数据
         project_data = {
+            # 基本配置信息，实际不输出，先保留
             'video_path': self.video_path,
             'frame_rate': self.frame_rate,
             'total_frames': self.total_frames,
+            # 图片帧标注信息
             'annotations': self.annotations
         }
+        # 保存总的json数据
+        json_data = {}
 
-        # 保存到Json文件
+        # 保存到TXT文件，每个帧一个文件
         try:
+            for frame_idx, annotations in project_data['annotations'].items():
+                # 第一步检查，判断当前帧是否为关键帧，如果不是则跳过不输出
+                if not self.key_frames.get(frame_idx, False):
+                    continue
+
+                # 为每个帧创建单独的TXT文件，文件名即为帧索引
+                txt_file_name = f"{frame_idx}.txt"
+                txt_file_path = os.path.join(output_dir, txt_file_name)
+                # 存储单帧JSON数据
+                json_single_frame_data = []
+                
+                # 输出txt文件
+                with open(txt_file_path, 'w', encoding='utf-8') as f:
+                    # 处理当前帧的所有标注信息
+                    for ann in annotations:
+                        x_min, y_min = ann['x1'], ann['y1']
+                        x_max, y_max = ann['x2'], ann['y2']
+                        class_id = ann['class_id']
+                        # 获取原始视频帧的尺寸（从第一帧获取）
+                        if self.video_frames:
+                            frame_height, frame_width = self.video_frames[0].shape[:2]
+                            # 计算归一化坐标
+                            x_center = (x_min + x_max) / 2 / frame_width
+                            y_center = (y_min + y_max) / 2 / frame_height
+                            width = (x_max - x_min) / frame_width
+                            height = (y_max - y_min) / frame_height
+                        else:
+                            x_center = 0
+                            y_center = 0
+                            width = 0
+                            height = 0
+                        # 写入JSON数据中
+                        json_single_frame_data.append({
+                            'class_id': class_id,
+                            'x_center': x_center,
+                            'y_center': y_center,
+                            'width': width,
+                            'height': height
+                        })
+                        f.write(f"{class_id},{x_center:.6f},{y_center:.6f},{width:.6f},{height:.6f}\n")
+                # 写入单帧JSON数据,key为帧索引,value为单帧数据
+                json_data[frame_idx] = json_single_frame_data
+                # 清空单帧数据
+                json_single_frame_data = []
+            # 循环结束后，补充输出json文件
+            json_file_path = os.path.join(output_dir, f"{video_name}.json")
             with open(json_file_path, 'w', encoding='utf-8') as f:
-                json.dump(project_data, f, ensure_ascii=False, indent=4)
-            QMessageBox.information(self, "成功", "项目已成功保存")
+                json.dump(json_data, f, ensure_ascii=False, indent=4)    # 输出的缩进为4格
+            QMessageBox.information(self, "成功", f"所有关键帧已保存到 {output_dir}文件夹中")
         except Exception as e:
             QMessageBox.warning(self, "错误", f"保存项目时出错: {e}")
 
@@ -769,11 +855,11 @@ class AnnotationTool(QMainWindow):
         new_x2 = new_x1 + width
         new_y2 = new_y1 + height
         # 确保标注框不超出图片帧边界
-        frame_height,frame_width = self.video_frames[self.current_frame_index].shape[:2]
-        new_x1 = max(0, min(new_x1, frame_width - 1))
-        new_y1 = max(0, min(new_y1, frame_height - 1))
-        new_x2 = max(0, min(new_x2, frame_width - 1))
-        new_y2 = max(0, min(new_y2, frame_height - 1))
+        #frame_height,frame_width = self.video_frames[self.current_frame_index].shape[:2]
+        #new_x1 = max(0, min(new_x1, frame_width - 1))
+        #new_y1 = max(0, min(new_y1, frame_height - 1))
+        #new_x2 = max(0, min(new_x2, frame_width - 1))
+        #new_y2 = max(0, min(new_y2, frame_height - 1))
         # 更新标注框位置
         self.dragging_annotation['x1'] = new_x1
         self.dragging_annotation['y1'] = new_y1
@@ -811,8 +897,12 @@ class AnnotationTool(QMainWindow):
         x2 = max(self.start_point.x(), self.end_point.x())
         y2 = max(self.start_point.y(), self.end_point.y())
 
-        # 获取标签文本
-        label = f"标签{annotation_id}"
+        # 设置标注框的标签
+        label = f"猪{annotation_id}"
+
+        # 根据标注框的颜色获取标注类别
+        if self.current_color == Qt.green:
+            class_id = 0
 
         # 存储标注信息
         if self.current_frame_index not in self.annotations:
@@ -824,6 +914,7 @@ class AnnotationTool(QMainWindow):
             'x2': x2,
             'y2': y2,
             'label': label,
+            'class_id': class_id,
             'text': '',
             'color': (self.current_color.red(), self.current_color.green(), self.current_color.blue())
         })
@@ -968,27 +1059,38 @@ class AnnotationTool(QMainWindow):
         else:
             QMessageBox.information(self, "提示", "请先加载视频")
 
-    # 浏览并选择输出JSON路径
-    def browse_output_json_path(self):
-        """浏览并选择输出JSON路径"""
-        file_path, _ = QFileDialog.getSaveFileName(
+    # 浏览并选择输入视频路径
+    def browse_input_video_path(self):
+        """浏览并选择导入的输入图片集路径"""
+        directory_path = QFileDialog.getExistingDirectory(
             # 当前窗口实例、对话框的标题栏文本、默认文件路径、文件类型过滤器
-            self, "选择输出JSON文件", self.config['output_json_path'], "JSON Files (*.json);;All Files (*)"
+            self, "选择输入图片集目录", self.config['default_input_path']
         )
-        if file_path:
-            self.config['output_json_path'] = file_path
-            self.output_json_path_input.setText(file_path)
+        if directory_path:
+            self.config['default_input_path'] = directory_path
+            self.video_path_input.setText(directory_path)
+
+    # 浏览并选择输出目录文件夹
+    def browse_output_directory(self):
+        """浏览并选择输出目录文件夹"""
+        directory_path = QFileDialog.getExistingDirectory(
+            # 当前窗口实例、对话框的标题栏文本、默认文件路径、文件类型过滤器
+            self, "选择参数文件输出目录文件夹", self.config['output_txt_path']
+        )
+        if directory_path:
+            self.config['output_txt_path'] = directory_path
+            self.output_txt_path_input.setText(directory_path)
 
     # 浏览并选择输出视频路径
-    def browse_output_video_path(self):
+    def browse_video_directory(self):
         """浏览并选择输出视频路径"""
-        file_path, _ = QFileDialog.getSaveFileName(
+        directory_path = QFileDialog.getExistingDirectory(
             # 当前窗口实例、对话框的标题栏文本、默认文件路径、文件类型过滤器
-            self, "选择输出视频文件", self.config['output_video_path'], "Video Files (*.mp4 *.avi *.mov);;All Files (*)"
+            self, "选择视频文件输出目录文件夹", self.config['output_video_path']
         )
-        if file_path:
-            self.config['output_video_path'] = file_path
-            self.output_video_path_input.setText(file_path)
+        if directory_path:
+            self.config['output_video_path'] = directory_path
+            self.output_video_path_input.setText(directory_path)
 
 # 主运行函数
 if __name__ == "__main__":
