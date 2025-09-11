@@ -1,20 +1,546 @@
 import sys
-import cv2
 import os
+import cv2
 import time
 import json
 import onnxdealA
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                              QPushButton, QLabel, QFileDialog, QSlider, QGroupBox, QFormLayout,
-                              QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QMessageBox,QSizePolicy)
+                              QPushButton, QLabel, QMessageBox, QFrame, QFileDialog, QSlider, QGroupBox, QFormLayout,
+                              QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QSizePolicy)
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QPixmap
+
+class SegmentationAnnotationTool(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("分割标注")
+        self.resize(1200, 800)
+        
+        # 配置参数
+        self.config = {
+            'background_color': '#f5f5f5',
+            'default_input_path': 'input_videos/',
+            'output_path': 'output/',
+            'model_path': 'model/yolov8m_gray.onnx',
+            'classes_path': 'model/classes.txt'
+        }
+        
+        # 分割标注特有变量
+        self.segmentation_masks = {}
+        self.current_brush_size = 5
+        self.brush_color = QColor(Qt.red)
+        self.current_tool = 'brush'
+        
+        # 基础变量
+        self.video_path = ""
+        self.current_frame_index = 0
+        self.total_frame_count = 0
+        self.frame_rate = 30
+        self.video_frames = []
+        
+        # 创建中心部件
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        
+        # 初始化UI
+        self.init_ui()
+    
+    def update_brush_size(self, size):
+        self.current_brush_size = size
+        self.statusBar().showMessage(f"画笔大小: {size}")
+    
+    def select_brush_color(self):
+        color = QColorDialog.getColor(self.brush_color, self, "选择画笔颜色")
+        if color.isValid():
+            self.brush_color = color
+            self.color_btn.setStyleSheet(f'background-color: {color.name()};')
+    
+    def set_current_tool(self, tool_type):
+        self.current_tool = tool_type
+        self.brush_btn.setChecked(tool_type == 'brush')
+        self.eraser_btn.setChecked(tool_type == 'eraser')
+    
+    def browse_video_directory(self):
+        """打开文件选择对话框，支持视频、图片文件和图片文件夹"""
+        # 先显示文件选择对话框
+        default_path = self.config['default_input_path']
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择视频或图片文件", default_path,
+            "Media Files (*.mp4 *.avi *.mov *.jpg *.jpeg *.png *.bmp);;All Files (*)"
+        )
+        
+        if file_path:
+            self.video_path = file_path
+            self.load_video_frames()
+        else:
+            # 如果用户取消了文件选择，询问是否要选择文件夹
+            reply = QMessageBox.question(
+                self, "选择文件夹", "是否要选择包含图片的文件夹?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                directory_path = QFileDialog.getExistingDirectory(
+                    self, "选择图片文件夹", default_path
+                )
+                if directory_path:
+                    self.video_path = directory_path
+                    self.load_image_folder()
+                    
+    def load_image_folder(self):
+        """批量加载文件夹中的图片"""
+        try:
+            # 清空之前的帧数据
+            self.video_frames = []
+            self.current_frame_index = 0
+            self.total_frame_count = 0
+            self.segmentation_masks = {}
+            
+            # 获取文件夹中的所有图片文件
+            image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
+            files = [f for f in os.listdir(self.video_path) if os.path.splitext(f)[1].lower() in image_extensions]
+            
+            # 按文件名排序，确保图片按顺序加载
+            files.sort()
+            
+            if not files:
+                QMessageBox.warning(self, "警告", "所选文件夹中没有找到图片文件")
+                return
+            
+            # 加载所有图片
+            for file in files:
+                file_path = os.path.join(self.video_path, file)
+                frame = cv2.imread(file_path)
+                if frame is not None:
+                    # 转换为RGB格式
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    self.video_frames.append(frame)
+                else:
+                    print(f"无法加载图片: {file}")
+            
+            # 更新视频信息
+            self.total_frame_count = len(self.video_frames)
+            self.frame_rate = 1  # 图片序列的帧率设为1
+            
+            # 初始化当前帧索引
+            self.current_frame_index = 0
+            
+            # 显示当前帧
+            if self.video_frames:
+                self.display_current_frame()
+                self.update_frame_label()
+                QMessageBox.information(self, "加载成功", f"成功加载 {self.total_frame_count} 张图片")
+            else:
+                QMessageBox.warning(self, "警告", "未加载到任何图片")
+                
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"加载文件夹时出错: {str(e)}")
+            print(e)
+    
+    def load_video_frames(self):
+        """加载视频或图片文件并处理为帧"""
+        try:
+            self.video_frames = []
+            
+            # 检查文件类型
+            file_ext = os.path.splitext(self.video_path)[1].lower()
+            
+            if file_ext in ['.mp4', '.avi', '.mov']:
+                # 加载视频文件
+                cap = cv2.VideoCapture(self.video_path)
+                if not cap.isOpened():
+                    QMessageBox.warning(self, "警告", "无法打开视频文件")
+                    return
+                
+                # 获取视频信息
+                self.total_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                self.frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
+                
+                # 读取所有帧
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    # 转换为RGB格式
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    self.video_frames.append(frame)
+                
+                cap.release()
+                
+            elif file_ext in ['.jpg', '.jpeg', '.png', '.bmp']:
+                # 加载单个图片文件
+                frame = cv2.imread(self.video_path)
+                if frame is None:
+                    QMessageBox.warning(self, "警告", "无法打开图片文件")
+                    return
+                
+                # 转换为RGB格式
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                self.video_frames.append(frame)
+                self.total_frame_count = 1
+                self.frame_rate = 1
+                
+            # 初始化当前帧索引
+            self.current_frame_index = 0
+            
+            # 显示当前帧
+            if self.video_frames:
+                self.display_current_frame()
+                self.update_frame_label()
+                QMessageBox.information(self, "加载成功", f"成功加载 {self.total_frame_count} 帧")
+            else:
+                QMessageBox.warning(self, "警告", "未加载到任何帧")
+                
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"加载文件时出错: {str(e)}")
+            print(e)
+    
+    def display_current_frame(self):
+        """显示当前帧，并绘制分割掩码"""
+        if 0 <= self.current_frame_index < len(self.video_frames):
+            frame = self.video_frames[self.current_frame_index].copy()
+            
+            # 绘制分割掩码
+            if self.current_frame_index in self.segmentation_masks:
+                mask = self.segmentation_masks[self.current_frame_index]
+                # 这里可以添加掩码绘制逻辑
+                # 例如: frame = cv2.addWeighted(frame, 0.7, mask, 0.3, 0)
+                pass
+            
+            # 转换为QImage并显示
+            height, width, channel = frame.shape
+            bytes_per_line = 3 * width
+            qimage = QImage(frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            
+            # 调整显示大小
+            scaled_pixmap = QPixmap.fromImage(qimage).scaled(
+                self.video_frame.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            self.video_frame.setPixmap(scaled_pixmap)
+    
+    def update_frame_label(self):
+        """更新帧信息标签"""
+        if self.total_frame_count > 0:
+            self.frame_label.setText(f'帧: {self.current_frame_index + 1}/{self.total_frame_count}')
+        else:
+            self.frame_label.setText('帧: 0/0')
+    
+    def prev_frame(self):
+        """显示上一帧"""
+        if self.current_frame_index > 0:
+            self.current_frame_index -= 1
+            self.display_current_frame()
+            self.update_frame_label()
+    
+    def next_frame(self):
+        """显示下一帧"""
+        if self.current_frame_index < len(self.video_frames) - 1:
+            self.current_frame_index += 1
+            self.display_current_frame()
+            self.update_frame_label()
+    
+    def save_segmentation(self):
+        """保存分割标注结果"""
+        # 实现分割结果保存逻辑
+        QMessageBox.information(self, "保存成功", "分割标注已保存")
+    
+    def export_segmentation(self):
+        """导出分割结果"""
+        # 实现分割结果导出逻辑
+        QMessageBox.information(self, "导出成功", "分割结果已导出")
+    
+    def undo_segmentation(self):
+        """撤销上一步操作"""
+        self.statusBar().showMessage("撤销操作")
+        
+    def set_style(self):
+        """设置分割标注工具样式"""
+        self.setStyleSheet("""
+            QMainWindow { background-color: #f5f5f5; }
+            QPushButton { padding: 8px 16px; border-radius: 4px; }
+            QLabel { font-size: 14px; }
+            QSlider::groove:horizontal { height: 6px; background: #ddd; border-radius: 3px; }
+            QSlider::handle:horizontal { width: 16px; height: 16px; background: #4a90e2; border-radius: 8px; }
+        """)
+    
+    def create_menu_bar(self):
+        """创建分割标注工具菜单栏"""
+        menubar = self.menuBar()
+        
+        # 文件菜单
+        file_menu = menubar.addMenu('文件')
+        open_action = file_menu.addAction('打开视频')
+        open_action.triggered.connect(self.browse_video_directory)
+        
+        save_action = file_menu.addAction('保存标注')
+        save_action.triggered.connect(self.save_segmentation)
+        
+        export_action = file_menu.addAction('导出分割结果')
+        export_action.triggered.connect(self.export_segmentation)
+        
+        # 编辑菜单
+        edit_menu = menubar.addMenu('编辑')
+        undo_action = edit_menu.addAction('撤销')
+        undo_action.triggered.connect(self.undo_segmentation)
+    
+    def create_tool_bar(self):
+        """创建分割标注工具工具栏"""
+        toolbar = self.addToolBar('分割工具')
+        toolbar.setMovable(False)
+        
+        # 画笔大小控制
+        size_label = QLabel('画笔大小:')
+        self.brush_size_slider = QSlider(Qt.Horizontal)
+        self.brush_size_slider.setRange(1, 20)
+        self.brush_size_slider.setValue(5)
+        self.brush_size_slider.valueChanged.connect(self.update_brush_size)
+        
+        # 颜色选择
+        self.color_btn = QPushButton('颜色')
+        self.color_btn.setStyleSheet(f'background-color: {self.brush_color.name()};')
+        self.color_btn.clicked.connect(self.select_brush_color)
+        
+        # 工具按钮
+        self.brush_btn = QPushButton('画笔')
+        self.brush_btn.setCheckable(True)
+        self.brush_btn.setChecked(True)
+        self.brush_btn.clicked.connect(lambda: self.set_current_tool('brush'))
+        
+        self.eraser_btn = QPushButton('橡皮擦')
+        self.eraser_btn.setCheckable(True)
+        self.eraser_btn.clicked.connect(lambda: self.set_current_tool('eraser'))
+        
+        # 添加到工具栏
+        toolbar.addWidget(size_label)
+        toolbar.addWidget(self.brush_size_slider)
+        toolbar.addWidget(self.color_btn)
+        toolbar.addSeparator()
+        toolbar.addWidget(self.brush_btn)
+        toolbar.addWidget(self.eraser_btn)
+    
+    def create_segmentation_content(self):
+        """创建分割标注主内容区域"""
+        # 创建分割面板
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # 左侧视频显示区域
+        self.video_frame = QLabel('视频显示区域')
+        self.video_frame.setAlignment(Qt.AlignCenter)
+        self.video_frame.setStyleSheet('background-color: black; color: white;')
+        self.video_frame.setMinimumSize(800, 600)
+        
+        # 右侧控制面板
+        control_panel = QWidget()
+        control_layout = QVBoxLayout(control_panel)
+        
+        # 帧控制
+        frame_control = QHBoxLayout()
+        self.prev_btn = QPushButton('上一帧')
+        self.prev_btn.clicked.connect(self.prev_frame)
+        
+        self.next_btn = QPushButton('下一帧')
+        self.next_btn.clicked.connect(self.next_frame)
+        
+        self.frame_label = QLabel('帧: 0/0')
+        
+        frame_control.addWidget(self.prev_btn)
+        frame_control.addWidget(self.next_btn)
+        frame_control.addWidget(self.frame_label)
+        
+        # 分割标签
+        label_group = QGroupBox('分割标签')
+        label_layout = QVBoxLayout()
+        self.label_combo = QComboBox()
+        self.label_combo.addItems(['背景', '猪', '饲料', '其他'])
+        label_layout.addWidget(self.label_combo)
+        label_group.setLayout(label_layout)
+        
+        # 添加到控制布局
+        control_layout.addLayout(frame_control)
+        control_layout.addWidget(label_group)
+        control_layout.addStretch()
+        
+        # 添加到分割器
+        splitter.addWidget(self.video_frame)
+        splitter.addWidget(control_panel)
+        splitter.setSizes([800, 300])
+        
+        self.main_layout.addWidget(splitter)
+    
+    def init_ui(self):
+        # 分割标注界面初始化 - 基于方框标注工具修改
+        self.video_frames = []
+        self.current_frame_index = 0
+        self.segmentation_masks = {}
+        self.current_tool = 'brush'
+        
+        # 创建主布局
+        self.main_layout = QVBoxLayout(self.central_widget)
+        
+        # 设置样式
+        self.set_style()
+        
+        # 创建菜单栏和工具栏
+        self.create_menu_bar()
+        self.create_tool_bar()
+        
+        # 创建主内容区域（分割标注特有的布局）
+        self.create_segmentation_content()
+        
+        # 状态栏
+        self.statusBar().showMessage("分割标注工具就绪")
+
+class SelectionWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("功能选择")
+        self.resize(600, 400)
+        
+        # 创建主部件和布局
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QVBoxLayout(self.central_widget)
+        
+        # 设置样式
+        self.set_style()
+        
+        # 创建标题
+        self.create_title()
+        
+        # 创建功能选择按钮
+        self.create_selection_buttons()
+        
+        # 创建底部信息
+        self.create_bottom_info()
+        
+        # 居中窗口
+        self.center_on_screen()
+    
+    def set_style(self):
+        """设置应用程序样式"""
+        self.setStyleSheet("""
+            QMainWindow { background-color: #f5f5f5; }
+            QPushButton { 
+                padding: 12px 24px; 
+                font-size: 16px; 
+                border-radius: 8px; 
+                border: 2px solid #4a90e2;
+                background-color: white;
+                color: #4a90e2;
+            }
+            QPushButton:hover { 
+                background-color: #4a90e2;
+                color: white;
+            }
+            QFrame { 
+                background-color: white;
+                border-radius: 10px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }
+        """)
+    
+    def create_title(self):
+        """创建标题部分"""
+        title_frame = QFrame()
+        title_layout = QVBoxLayout(title_frame)
+        title_layout.setContentsMargins(20, 20, 20, 20)
+        
+        title_label = QLabel("功能选择")
+        title_font = QFont()
+        title_font.setPointSize(24)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_label.setAlignment(Qt.AlignCenter)
+        
+        subtitle_label = QLabel("请选择您要使用的功能")
+        subtitle_font = QFont()
+        subtitle_font.setPointSize(14)
+        subtitle_label.setFont(subtitle_font)
+        subtitle_label.setAlignment(Qt.AlignCenter)
+        
+        title_layout.addWidget(title_label)
+        title_layout.addWidget(subtitle_label)
+        self.main_layout.addWidget(title_frame)
+        self.main_layout.addSpacing(30)
+    
+    def create_selection_buttons(self):
+        """创建功能选择按钮"""
+        buttons_frame = QFrame()
+        buttons_layout = QVBoxLayout(buttons_frame)
+        buttons_layout.setContentsMargins(40, 20, 40, 20)
+        buttons_layout.setSpacing(15)
+        
+        # 方框标注工具按钮
+        self.box_annotation_btn = QPushButton("方框标注")
+        self.box_annotation_btn.clicked.connect(self.open_box_annotation)
+        buttons_layout.addWidget(self.box_annotation_btn)
+        
+        # 分割标注工具按钮
+        self.segmentation_annotation_btn = QPushButton("分割标注")
+        self.segmentation_annotation_btn.clicked.connect(self.open_segmentation_annotation)
+        buttons_layout.addWidget(self.segmentation_annotation_btn)
+
+        
+        self.main_layout.addWidget(buttons_frame)
+    
+    def create_bottom_info(self):
+        """创建底部信息"""
+        bottom_frame = QFrame()
+        bottom_layout = QHBoxLayout(bottom_frame)
+        bottom_layout.setContentsMargins(20, 10, 20, 10)
+        
+        version_label = QLabel("版本 1.0.0")
+        version_label.setAlignment(Qt.AlignCenter)
+        
+        bottom_layout.addWidget(version_label)
+        self.main_layout.addWidget(bottom_frame)
+        self.main_layout.setAlignment(bottom_frame, Qt.AlignBottom)
+    
+    def center_on_screen(self):
+        """将窗口居中显示在屏幕上"""
+        qr = self.frameGeometry()
+        cp = QApplication.primaryScreen().availableGeometry().center()
+        qr.moveCenter(cp)
+        self.move(qr.topLeft())
+    
+    def open_box_annotation(self):
+        try:
+            # 隐藏当前选择窗口
+            self.hide()
+            # 创建并显示方框标注工具窗口
+            self.box_annotation_window = BoxAnnotationTool()
+            self.box_annotation_window.show()
+            # 连接关闭信号
+            self.box_annotation_window.closeEvent = lambda event: self.show_after_close(event)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"打开方框标注工具时出错: {str(e)}")
+            self.show()
+    
+    def open_segmentation_annotation(self):
+        try:
+            # 隐藏当前选择窗口
+            self.hide()
+            # 创建并显示分割标注工具窗口
+            self.segmentation_annotation_window = SegmentationAnnotationTool()
+            self.segmentation_annotation_window.show()
+            # 连接关闭信号
+            self.segmentation_annotation_window.closeEvent = lambda event: self.show_after_close(event)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"打开分割标注工具时出错: {str(e)}")
+            self.show()
+    
+    def show_after_close(self, event):
+        """当子窗口关闭后，显示选择窗口"""
+        self.show()
+        event.accept()
+
 from PySide6.QtCore import Qt, QSize, QTimer, QEvent,QPoint
 from PySide6.QtGui import QPixmap, QColor, QFont, QImage
 from ultralytics import YOLO
 
-class AnnotationTool(QMainWindow):
+class BoxAnnotationTool(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("视频标注工具")
+        self.setWindowTitle("方框标注")
         self.resize(1200, 800)
         # 视频帧相关变量
         self.video_frames = []         #存储所有视频帧
@@ -407,10 +933,92 @@ class AnnotationTool(QMainWindow):
             self.video_id_value.setText(str(self.video_path.split('/')[-1]))
             self.load_video_frames()
     
-    # TODO: 加载图片数据集功能
+    # 加载图片数据集功能
     def load_default_atlas(self):
-        QMessageBox.information(self, "提示", "当前功能未实现")
-        pass
+        """批量加载文件夹中的图片"""
+        try:
+            # 清空之前的帧数据
+            self.video_frames = []
+            self.current_frame_index = 0
+            self.annotations = {}
+            
+            # 获取文件夹中的所有图片文件
+            image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
+            files = [f for f in os.listdir(self.video_path) if os.path.splitext(f)[1].lower() in image_extensions]
+            
+            # 按文件名排序，确保图片按顺序加载
+            files.sort()
+            
+            if not files:
+                QMessageBox.warning(self, "警告", "所选文件夹中没有找到图片文件")
+                return
+            
+            # 加载所有图片
+            for file in files:
+                file_path = os.path.join(self.video_path, file)
+                frame = cv2.imread(file_path)
+                if frame is not None:
+                    # 转换为RGB格式
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    self.video_frames.append(frame)
+                else:
+                    print(f"无法加载图片: {file}")
+            
+            # 更新视频信息
+            self.total_frames = len(self.video_frames)
+            self.frame_rate = 1  # 图片序列的帧率设为1
+            
+            # 判断是否有指定的模型
+            if self.config['model_path'] is not None:
+                # 存储模型识别的标注信息
+                results = []
+                
+                # 使用Onnx脚本提取视频帧自动标注的信息
+                for frame in self.video_frames:
+                    frame_temp = frame.copy()
+                    result = onnxdealA.main(self.config['model_path'], frame_temp, self.config['classes_path'])
+                    results.append(result)
+                
+                # 根据识别到的标注信息进行保存
+                frame_idx = 0
+                for result in results:
+                    # 处理检测结果
+                    frame_annotation = []
+                    for i, box in enumerate(result):
+                        # 获取标注框的坐标，将列表结构拆分成四个变量
+                        x1, y1, x2, y2 = box['xyxy']
+                        # 获取检测类别
+                        class_id = box['cls']
+                        # 构建标注信息
+                        annotation = {
+                            'id': i + 1,
+                            'class_id': class_id,
+                            'x1': x1,
+                            'y1': y1,
+                            'x2': x2,
+                            'y2': y2,
+                            'text': '',
+                            'color': (0, 255, 0)  # 自动化标注框默认是绿色
+                        }
+                        frame_annotation.append(annotation)
+                        
+                        # 保存标注信息
+                        if frame_annotation:
+                            self.annotations[frame_idx] = frame_annotation
+                    
+                    frame_idx += 1
+            
+            # 更新界面显示
+            if self.video_frames:
+                self.display_current_frame()
+                self.update_frame_info()
+                QMessageBox.information(self, "加载完成", f"成功加载 {len(self.video_frames)} 张图片")
+            else:
+                QMessageBox.warning(self, "警告", "未加载到任何图片")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "警告", f"加载图片时出错: {e}")
+            print(e)
 
     # 将视频切换成图片帧
     def load_video_frames(self):
@@ -1069,6 +1677,9 @@ class AnnotationTool(QMainWindow):
         if directory_path:
             self.config['default_input_path'] = directory_path
             self.video_path_input.setText(directory_path)
+            self.video_path = directory_path
+            self.video_id_value.setText(os.path.basename(directory_path))
+            self.load_default_atlas()
 
     # 浏览并选择输出目录文件夹
     def browse_output_directory(self):
@@ -1095,6 +1706,7 @@ class AnnotationTool(QMainWindow):
 # 主运行函数
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = AnnotationTool()
-    window.show()
+    # 首先显示功能选择界面
+    selection_window = SelectionWindow()
+    selection_window.show()
     sys.exit(app.exec())
