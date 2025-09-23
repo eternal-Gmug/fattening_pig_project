@@ -232,14 +232,12 @@ class SegmentationAnnotationTool(QMainWindow):
             self.update_frame_label()
     
     def next_frame(self):
-        """显示下一帧"""
-        if self.current_frame_index < len(self.video_frames) - 1:
+        if self.current_frame_index < self.total_frame_count - 1:
             self.current_frame_index += 1
             self.display_current_frame()
             self.update_frame_label()
     
     def save_segmentation(self):
-        """保存分割标注结果"""
         # 实现分割结果保存逻辑
         QMessageBox.information(self, "保存成功", "分割标注已保存")
     
@@ -389,6 +387,7 @@ class SegmentationAnnotationTool(QMainWindow):
         # 状态栏
         self.statusBar().showMessage("分割标注工具就绪")
 
+# 入口选择界面
 class SelectionWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -434,7 +433,6 @@ class SelectionWindow(QMainWindow):
             QFrame { 
                 background-color: white;
                 border-radius: 10px;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             }
         """)
     
@@ -535,7 +533,6 @@ class SelectionWindow(QMainWindow):
 
 from PySide6.QtCore import Qt, QSize, QTimer, QEvent,QPoint
 from PySide6.QtGui import QPixmap, QColor, QFont, QImage
-from ultralytics import YOLO
 
 class BoxAnnotationTool(QMainWindow):
     def __init__(self):
@@ -556,11 +553,14 @@ class BoxAnnotationTool(QMainWindow):
         self.drawing = False           # 是否正在绘制标注
         self.start_point = None        # 绘制开始点
         self.end_point = None          # 绘制结束点
-        self.current_color = QColor(Qt.green) # 当前手动标注的颜色（默认为绿色）
+        self.current_color = QColor(Qt.green)    # 当前手动标注的颜色（默认为绿色）
         self.current_thickness = 2     # 当前标注的线宽
         self.dragging = False          # 是否正在拖动标注
         self.dragging_annotation = None # 当前正在拖动的标注
         self.drag_offset = QPoint()    # 拖动偏移量
+        self.resizing = False          # 是否正在调整标注框大小
+        self.resize_anchor = None      # 调整大小的锚点位置('n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw')
+        self.resizing_annotation = None   # 当前正在调整大小的标注
 
         # 初始化配置
         self.config = {
@@ -568,8 +568,8 @@ class BoxAnnotationTool(QMainWindow):
             'output_txt_path': './output',
             'output_video_path': './processed_videos',
             'background_color': '#f0f0f0',
-            'model_path': 'model/pig_gesture_best.onnx',
-            'classes_path': 'model/classes.txt'
+            'model_path': './model/pig_gesture_best.onnx',
+            'classes_path': './model/classes.txt'
         }
 
         # 创建主部件和布局
@@ -607,7 +607,7 @@ class BoxAnnotationTool(QMainWindow):
 
         # 文件菜单
         file_menu = menu_bar.addMenu("文件")
-        load_video_action = file_menu.addAction("加载视频")
+        load_video_action = file_menu.addAction("加载文件")
         load_video_action.triggered.connect(self.load_video)
 
         save_project_action = file_menu.addAction("保存项目")
@@ -917,14 +917,14 @@ class BoxAnnotationTool(QMainWindow):
         default_input_path = self.config['default_input_path']
         if os.path.exists(default_input_path):
             files = os.listdir(default_input_path)
-            # 必须全部都是图片文件才能加载
-            if all(file.endswith(('.jpg', '.jpeg', '.png')) for file in files):
+            # 文件必须存在且全部都是图片文件才能加载
+            if files and all(file.endswith(('.jpg', '.jpeg', '.png')) for file in files):
                 # 全部是图片文件，直接加载
                 self.video_path = default_input_path
                 self.video_id_value.setText(str(self.video_path.split('/')[-1]))
-                self.load_default_atlas()
+                self.load_default_atlas(files)
                 return
-        # 如果默认输入文件夹没有视频文件，从本地文件夹加载视频
+        # 如果默认输入文件夹没有图片文件，从本地文件夹加载视频
         file_path, _ = QFileDialog.getOpenFileName(
             self, "选择视频或图片文件", "", "Media Files (*.mp4 *.avi *.mov *.jpg *.jpeg *.png *.bmp);;All Files (*)"
         )
@@ -933,25 +933,62 @@ class BoxAnnotationTool(QMainWindow):
             self.video_id_value.setText(str(self.video_path.split('/')[-1]))
             self.load_video_frames()
     
+    # 提取模型识别的自动标注信息
+    def Extract_the_annotation_information(self,results: list):
+        """ 提取模型识别的自动标注信息 """
+        for frame in self.video_frames:
+            # 返回一个列表，每个列表包含自动标注框的信息
+            # 返回的格式：[{'cls': 0, 'xyxy': [x1,y1,x2,y2], 'score': 0.8},{'cls': 1, 'xyxy': [x1,y1,x2,y2], 'score': 0.8}]
+            frame_temp = frame.copy()
+            result = onnxdealA.main(self.config['model_path'],frame_temp,self.config['classes_path'])
+            # 保存进results
+            results.append(result)
+    
+    # 根据识别到的标注信息进行保存
+    def Save_model_recognition_annotations(self,results:list):
+        """ 根据识别到的标注信息进行保存 """
+        if not results:
+            return
+        
+        frame_idx = 0
+        for result in results:
+            # 处理检测结果
+            frame_annotation = []
+            for i,box in enumerate(result):
+                # 获取标注框的坐标，将列表结构拆分成四个变量
+                x1,y1,x2,y2 = box['xyxy']
+                # 获取置信度
+                #confidence = float(box.conf[0])
+                # 获取检测类别
+                class_id = box['cls']
+                # 构建标注信息
+                annotation ={
+                    'id': i + 1,
+                    'class_id': class_id,
+                    'x1': x1,
+                    'y1': y1,
+                    'x2': x2,
+                    'y2': y2,
+                    #'confidence': confidence,
+                    'text': '',
+                    'color':(0,255,0)                # 自动化标注框默认是绿色
+                }
+                frame_annotation.append(annotation)
+                    
+            # 保存标注信息
+            if frame_annotation:
+                self.annotations[frame_idx] = frame_annotation
+            
+            frame_idx += 1
+
     # 加载图片数据集功能
-    def load_default_atlas(self):
+    def load_default_atlas(self, files):
         """批量加载文件夹中的图片"""
         try:
             # 清空之前的帧数据
             self.video_frames = []
             self.current_frame_index = 0
             self.annotations = {}
-            
-            # 获取文件夹中的所有图片文件
-            image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
-            files = [f for f in os.listdir(self.video_path) if os.path.splitext(f)[1].lower() in image_extensions]
-            
-            # 按文件名排序，确保图片按顺序加载
-            files.sort()
-            
-            if not files:
-                QMessageBox.warning(self, "警告", "所选文件夹中没有找到图片文件")
-                return
             
             # 加载所有图片
             for file in files:
@@ -968,45 +1005,15 @@ class BoxAnnotationTool(QMainWindow):
             self.total_frames = len(self.video_frames)
             self.frame_rate = 1  # 图片序列的帧率设为1
             
+            # 存储模型识别的标注信息
+            results = []
+
             # 判断是否有指定的模型
             if self.config['model_path'] is not None:
-                # 存储模型识别的标注信息
-                results = []
-                
                 # 使用Onnx脚本提取视频帧自动标注的信息
-                for frame in self.video_frames:
-                    frame_temp = frame.copy()
-                    result = onnxdealA.main(self.config['model_path'], frame_temp, self.config['classes_path'])
-                    results.append(result)
-                
+                self.Extract_the_annotation_information(results)
                 # 根据识别到的标注信息进行保存
-                frame_idx = 0
-                for result in results:
-                    # 处理检测结果
-                    frame_annotation = []
-                    for i, box in enumerate(result):
-                        # 获取标注框的坐标，将列表结构拆分成四个变量
-                        x1, y1, x2, y2 = box['xyxy']
-                        # 获取检测类别
-                        class_id = box['cls']
-                        # 构建标注信息
-                        annotation = {
-                            'id': i + 1,
-                            'class_id': class_id,
-                            'x1': x1,
-                            'y1': y1,
-                            'x2': x2,
-                            'y2': y2,
-                            'text': '',
-                            'color': (0, 255, 0)  # 自动化标注框默认是绿色
-                        }
-                        frame_annotation.append(annotation)
-                        
-                        # 保存标注信息
-                        if frame_annotation:
-                            self.annotations[frame_idx] = frame_annotation
-                    
-                    frame_idx += 1
+                self.Save_model_recognition_annotations(results)
             
             # 更新界面显示
             if self.video_frames:
@@ -1026,6 +1033,7 @@ class BoxAnnotationTool(QMainWindow):
         # 清空之前的帧数据
         self.video_frames = []
         self.current_frame_index = 0
+        self.annotations = {}
         try:
             # 打开视频文件
             cap = cv2.VideoCapture(self.video_path)
@@ -1035,11 +1043,6 @@ class BoxAnnotationTool(QMainWindow):
             # 读取视频信息
             self.frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
             self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            
-            # 判断是否有指定的模型
-            if self.config['model_path'] is None:
-                QMessageBox.warning(self, "警告", "请指定模型路径")
-                return
 
             # 存储模型识别的标注信息
             results = []
@@ -1054,50 +1057,11 @@ class BoxAnnotationTool(QMainWindow):
                 self.video_frames.append(frame)
             cap.release()
 
-            # 2.使用Onnx脚本提取视频帧自动标注的信息
-            for frame in self.video_frames:
-                # 返回一个列表，每个列表包含自动标注框的信息
-                # 返回的格式：[{'cls': 0, 'xyxy': [x1,y1,x2,y2], 'score': 0.8},{'cls': 1, 'xyxy': [x1,y1,x2,y2], 'score': 0.8}]
-                frame_temp = frame.copy()
-                result = onnxdealA.main(self.config['model_path'],frame_temp,self.config['classes_path'])
-                # 保存进results
-                results.append(result)
-
-            if results is None:
-                QMessageBox.warning(self, "警告", "无法识别到物体")
-                return
-            
-            # 3.根据识别到的标注信息进行保存
-            frame_idx = 0
-            for result in results:
-                # 处理检测结果
-                frame_annotation = []
-                for i,box in enumerate(result):
-                    # 获取标注框的坐标，将列表结构拆分成四个变量
-                    x1,y1,x2,y2 = box['xyxy']
-                    # 获取置信度
-                    #confidence = float(box.conf[0])
-                    # 获取检测类别
-                    class_id = box['cls']
-                    # 构建标注信息
-                    annotation ={
-                        'id': i + 1,
-                        'class_id': class_id,
-                        'x1': x1,
-                        'y1': y1,
-                        'x2': x2,
-                        'y2': y2,
-                        #'confidence': confidence,
-                        'text': '',
-                        'color':(0,255,0)                # 自动化标注框默认是绿色
-                    }
-                    frame_annotation.append(annotation)
-                    
-                    # 保存标注信息
-                    if frame_annotation:
-                        self.annotations[frame_idx] = frame_annotation
-
-                frame_idx += 1
+            if self.config['model_path'] is not None:
+                # 2.使用Onnx脚本提取视频帧自动标注的信息
+                self.Extract_the_annotation_information(results)
+                # 3.根据识别到的标注信息进行保存
+                self.Save_model_recognition_annotations(results)
 
             # 更新界面显示
             if self.video_frames:
@@ -1485,6 +1449,63 @@ class BoxAnnotationTool(QMainWindow):
                 # 记录当前鼠标位置与左上角的偏移量
                 self.drag_offset = mapped_point - QPoint(x1, y1)
                 break
+
+    # 判断当前鼠标是否在标注框的边缘（点击左鼠标时）
+    def is_mouse_on_annotation_edge(self,mapped_point):
+        """判断当前鼠标是否在标注框的边缘"""
+        edge_margin = 10       # 边缘检测的像素宽度
+        for anno in self.annotations[self.current_frame_index]:
+            x1,y1,x2,y2 = anno['x1'],anno['y1'],anno['x2'],anno['y2']
+            mouse_x,mouse_y = mapped_point.x(),mapped_point.y()
+            # 检查鼠标是否在右下角边缘(se)
+            if (abs(mouse_x - x2) <= edge_margin and abs(mouse_y - y2) <= edge_margin):
+                self.resizing = True
+                self.resize_anchor = 'se'
+                self.resizing_annotation = anno
+                return True
+            # 检查鼠标是否在右上角边缘(ne)
+            if (abs(mouse_x - x2) <= edge_margin and abs(mouse_y - y1) <= edge_margin):
+                self.resizing = True
+                self.resize_anchor = 'ne'
+                self.resizing_annotation = anno
+                return True
+            # 检查鼠标是否在左下角边缘(sw)
+            if (abs(mouse_x - x1) <= edge_margin and abs(mouse_y - y2) <= edge_margin):
+                self.resizing = True
+                self.resize_anchor = 'sw'
+                self.resizing_annotation = anno
+                return True
+            # 检查鼠标是否在左上角边缘(nw)
+            if (abs(mouse_x - x1) <= edge_margin and abs(mouse_y - y1) <= edge_margin):
+                self.resizing = True
+                self.resize_anchor = 'nw'
+                self.resizing_annotation = anno
+                return True
+            # 检查是否在右边框上(e)
+            if (abs(mouse_x - x2) <= edge_margin and y1 <= mouse_y <= y2):
+                self.resizing = True
+                self.resize_anchor = 'e'
+                self.resizing_annotation = anno
+                return True
+            # 检查是否在左边框上(w)
+            if (abs(mouse_x - x1) <= edge_margin and y1 <= mouse_y <= y2):
+                self.resizing = True
+                self.resize_anchor = 'w'
+                self.resizing_annotation = anno
+                return True
+            # 检查是否在上边框上(n)
+            if (abs(mouse_y - y1) <= edge_margin and x1 <= mouse_x <= x2):
+                self.resizing = True
+                self.resize_anchor = 'n'
+                self.resizing_annotation = anno
+                return True
+            # 检查是否在下边框上(s)
+            if (abs(mouse_y - y2) <= edge_margin and x1 <= mouse_x <= x2):
+                self.resizing = True
+                self.resize_anchor = 's'
+                self.resizing_annotation = anno
+                return True
+        return False
 
     # 添加标注框
     def add_annotation(self):

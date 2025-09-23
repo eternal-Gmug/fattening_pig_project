@@ -1,0 +1,11 @@
+# 项目依赖库
+opencv-python>=4.5.0
+numpy>=1.20.0
+onnxruntime>=1.9.0
+PySide6>=6.0.0
+
+# 可选依赖（根据项目可能需要的额外功能）
+# 如果项目后续需要使用PyTorch或YOLO模型训练，可以添加以下依赖
+# torch>=1.9.0
+# torchvision>=0.10.0
+# ultralytics>=8.0.0  # YOLOv8库
