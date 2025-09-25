@@ -3,6 +3,9 @@ import os
 import cv2
 import time
 import json
+import threading
+from queue import Queue, Empty
+import math
 import onnxdealA
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QPushButton, QLabel, QMessageBox, QFrame, QFileDialog, QSlider, QGroupBox, QFormLayout,
@@ -539,13 +542,18 @@ class BoxAnnotationTool(QMainWindow):
         super().__init__()
         self.setWindowTitle("方框标注")
         self.resize(1200, 800)
+        # 添加线程锁，用于解决next_frame连点问题
+        self.next_frame_lock = threading.Lock()
         # 视频帧相关变量
         self.video_frames = []         #存储所有视频帧
         self.video_path = ""           #视频的输入路径
+        self.video_type = False        #判断是视频还是图片序列
         self.current_frame_index = 0   #当前显示的帧索引
         self.total_frame_count = 0     #视频总帧数
         self.frame_rate = 30           #视频的帧率
+        self.video_frame_selection_interval = 4 # 视频帧跳跃间隔（默认取第1帧、第5帧、第9帧...）
         self.key_frames = {}           #存储视频的关键帧索引
+        self.frame_queue = Queue(maxsize=100)    # 图片帧读取队列
         # 标注相关变量
         self.annotations = {}          # 存储所有标注信息
         self.annotation_widgets = {}   # 存储所有标注框的文本输入框{frameindex:[{annotationid:widget},{annotationid:widget}]}
@@ -932,55 +940,50 @@ class BoxAnnotationTool(QMainWindow):
             self.video_path = file_path
             self.video_id_value.setText(str(self.video_path.split('/')[-1]))
             self.load_video_frames()
+            self.video_type = True
     
     # 提取模型识别的自动标注信息
-    def Extract_the_annotation_information(self,results: list):
-        """ 提取模型识别的自动标注信息 """
-        for frame in self.video_frames:
-            # 返回一个列表，每个列表包含自动标注框的信息
-            # 返回的格式：[{'cls': 0, 'xyxy': [x1,y1,x2,y2], 'score': 0.8},{'cls': 1, 'xyxy': [x1,y1,x2,y2], 'score': 0.8}]
-            frame_temp = frame.copy()
-            result = onnxdealA.main(self.config['model_path'],frame_temp,self.config['classes_path'])
-            # 保存进results
-            results.append(result)
+    def Extract_the_annotation_information(self,frame):
+        """ 提取单帧模型识别的自动标注信息 """
+        # 返回一个列表，每个列表包含自动标注框的信息
+        # 返回的格式：[{'cls': 0, 'xyxy': [x1,y1,x2,y2], 'score': 0.8},{'cls': 1, 'xyxy': [x1,y1,x2,y2], 'score': 0.8}]
+        if frame is None:
+            return None
+        result = onnxdealA.main(self.config['model_path'],frame,self.config['classes_path'])
+        return result
     
     # 根据识别到的标注信息进行保存
-    def Save_model_recognition_annotations(self,results:list):
+    def Save_model_recognition_annotations(self,result,frame_index):
         """ 根据识别到的标注信息进行保存 """
-        if not results:
+        if not result:
             return
-        
-        frame_idx = 0
-        for result in results:
-            # 处理检测结果
-            frame_annotation = []
-            for i,box in enumerate(result):
-                # 获取标注框的坐标，将列表结构拆分成四个变量
-                x1,y1,x2,y2 = box['xyxy']
-                # 获取置信度
-                #confidence = float(box.conf[0])
-                # 获取检测类别
-                class_id = box['cls']
-                # 构建标注信息
-                annotation ={
-                    'id': i + 1,
-                    'class_id': class_id,
-                    'x1': x1,
-                    'y1': y1,
-                    'x2': x2,
-                    'y2': y2,
-                    #'confidence': confidence,
-                    'text': '',
-                    'color':(0,255,0)                # 自动化标注框默认是绿色
-                }
-                frame_annotation.append(annotation)
-                    
-            # 保存标注信息
-            if frame_annotation:
-                self.annotations[frame_idx] = frame_annotation
+        # 处理检测结果
+        frame_annotation = []
+        for i,box in enumerate(result):
+            # 获取标注框的坐标，将列表结构拆分成四个变量
+            x1,y1,x2,y2 = box['xyxy']
+            # 获取置信度
+            # confidence = float(box.conf[0])
+            # 获取检测类别
+            class_id = box['cls']
+            # 构建标注信息
+            annotation ={
+                'id': i + 1,
+                'class_id': class_id,
+                'x1': x1,
+                'y1': y1,
+                'x2': x2,
+                'y2': y2,
+                # 'confidence': confidence,
+                'label': f"猪{i+1}",
+                'text': '',
+                'color':(0,255,0)                # 自动化标注框默认是绿色
+            }
+            frame_annotation.append(annotation)
+        # 保存标注信息
+        if frame_annotation:
+            self.annotations[frame_index] = frame_annotation
             
-            frame_idx += 1
-
     # 加载图片数据集功能
     def load_default_atlas(self, files):
         """批量加载文件夹中的图片"""
@@ -1002,18 +1005,14 @@ class BoxAnnotationTool(QMainWindow):
                     print(f"无法加载图片: {file}")
             
             # 更新视频信息
-            self.total_frames = len(self.video_frames)
+            self.total_frame_count = len(self.video_frames)
             self.frame_rate = 1  # 图片序列的帧率设为1
-            
-            # 存储模型识别的标注信息
-            results = []
 
             # 判断是否有指定的模型
             if self.config['model_path'] is not None:
-                # 使用Onnx脚本提取视频帧自动标注的信息
-                self.Extract_the_annotation_information(results)
-                # 根据识别到的标注信息进行保存
-                self.Save_model_recognition_annotations(results)
+                for frame_index,frame in enumerate(self.video_frames):
+                    result = self.Extract_the_annotation_information(frame)
+                    self.Save_model_recognition_annotations(result, frame_index)
             
             # 更新界面显示
             if self.video_frames:
@@ -1040,30 +1039,46 @@ class BoxAnnotationTool(QMainWindow):
             if not cap.isOpened():
                 QMessageBox.warning(self, "警告", "无法打开视频文件")
                 return
-            # 读取视频信息
+            # 读取视频信息，直接从视频文件的元数据获取信息，这是一个高效信息
             self.frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
-            self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            # 处理总帧数等于视频总帧数除以间隔并向上取整
+            # self.total_frame_count = int(math.ceil(cap.get(cv2.CAP_PROP_FRAME_COUNT)/self.video_frame_selection_interval))
 
-            # 存储模型识别的标注信息
-            results = []
-            # 1. 先将视频帧转换为图片帧
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                # 转换成RGB格式
-                frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
-                # 存储原始帧
-                self.video_frames.append(frame)
-            cap.release()
+            # 图片帧读取线程
+            def frame_reader(cap:cv2.VideoCapture):
+                frame_count = 0
+                exact_frame_count = 0
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    # 从第一张开始，每隔k张读取一帧
+                    if frame_count % self.video_frame_selection_interval == 0:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        # 解析当前帧的标注信息
+                        if self.config['model_path'] is not None:
+                            result = self.Extract_the_annotation_information(frame)
+                            # 保存当前帧的标注信息
+                            self.Save_model_recognition_annotations(result, int((frame_count / self.video_frame_selection_interval)))
+                        self.frame_queue.put(frame)
+                        exact_frame_count += 1
+                    frame_count += 1
+                    self.total_frame_count = exact_frame_count
+                # 视频帧读取完毕后，放入None作为结束信号
+                self.frame_queue.put(None)
+                cap.release()
 
-            if self.config['model_path'] is not None:
-                # 2.使用Onnx脚本提取视频帧自动标注的信息
-                self.Extract_the_annotation_information(results)
-                # 3.根据识别到的标注信息进行保存
-                self.Save_model_recognition_annotations(results)
+            # 1. 先将视频帧转换为图片帧，启动视频帧读取线程
+            reader_thread = threading.Thread(target=frame_reader, args=(cap,))
+            reader_thread.daemon = True
+            reader_thread.start()
 
-            # 更新界面显示
+            # 2. 从视频帧队列中提取帧
+            # 2.1 先提取第一帧
+            frame = self.frame_queue.get()
+            self.video_frames.append(frame)
+            
+            # 更新第一帧界面显示
             if self.video_frames:
                 self.display_current_frame()
                 self.update_frame_info()
@@ -1073,7 +1088,7 @@ class BoxAnnotationTool(QMainWindow):
                     #detected_count = sum(len(anns) for anns in self.annotations.values())
                     #QMessageBox.information(self, "检测结果", f"检测到 {detected_count} 只猪")
                     # 输出检测完成
-                    QMessageBox.information(self, "检测完成", f"检测到 {frame_idx} 帧")
+                    QMessageBox.information(self, "检测成功", "视频检测已完成，结果已暂存。")
             else:
                 QMessageBox.warning(self, "警告", "视频中未提取到帧")
 
@@ -1085,7 +1100,7 @@ class BoxAnnotationTool(QMainWindow):
     # 显示当前图片帧（⭐⭐⭐⭐⭐）
     def display_current_frame(self):
         """显示当前帧，并绘制标注"""
-        #TODO:可以直接从已经被yolov8处理过的帧提取结果
+        # 可以直接从已经被yolov8处理过的帧提取结果
         if 0 <= self.current_frame_index < len(self.video_frames):
             frame = self.video_frames[self.current_frame_index].copy()
             # 转换为QImage
@@ -1132,7 +1147,6 @@ class BoxAnnotationTool(QMainWindow):
     def update_frame_info(self):
         """更新帧信息显示"""
         self.video_id_value.setText(str(self.video_path.split('/')[-1]).split('.')[0])
-        self.total_frame_count = len(self.video_frames)
         self.frame_num_value.setText(f"{self.current_frame_index + 1}/{self.total_frame_count}")
         self.fps_value.setText(str(self.frame_rate))
         self.essential_frame_checkbox.setChecked(self.key_frames.get(self.current_frame_index, False))
@@ -1155,7 +1169,7 @@ class BoxAnnotationTool(QMainWindow):
             # 基本配置信息，实际不输出，先保留
             'video_path': self.video_path,
             'frame_rate': self.frame_rate,
-            'total_frames': self.total_frames,
+            'total_frames': self.total_frame_count,
             # 图片帧标注信息
             'annotations': self.annotations
         }
@@ -1165,12 +1179,14 @@ class BoxAnnotationTool(QMainWindow):
         # 保存到TXT文件，每个帧一个文件
         try:
             for frame_idx, annotations in project_data['annotations'].items():
+                # 将frame_idx从浮点数转换为整数
+                frame_idx_int = int(frame_idx)
                 # 第一步检查，判断当前帧是否为关键帧，如果不是则跳过不输出
-                if not self.key_frames.get(frame_idx, False):
+                if not self.key_frames.get(frame_idx_int, False):
                     continue
 
                 # 为每个帧创建单独的TXT文件，文件名即为帧索引
-                txt_file_name = f"{frame_idx}.txt"
+                txt_file_name = f"{frame_idx_int}.txt"
                 txt_file_path = os.path.join(output_dir, txt_file_name)
                 # 存储单帧JSON数据
                 json_single_frame_data = []
@@ -1182,6 +1198,7 @@ class BoxAnnotationTool(QMainWindow):
                         x_min, y_min = ann['x1'], ann['y1']
                         x_max, y_max = ann['x2'], ann['y2']
                         class_id = ann['class_id']
+                        text = ann['text']
                         # 获取原始视频帧的尺寸（从第一帧获取）
                         if self.video_frames:
                             frame_height, frame_width = self.video_frames[0].shape[:2]
@@ -1201,11 +1218,12 @@ class BoxAnnotationTool(QMainWindow):
                             'x_center': x_center,
                             'y_center': y_center,
                             'width': width,
-                            'height': height
+                            'height': height,
+                            'text': text,
                         })
-                        f.write(f"{class_id},{x_center:.6f},{y_center:.6f},{width:.6f},{height:.6f}\n")
+                        f.write(f"{class_id},{x_center:.6f},{y_center:.6f},{width:.6f},{height:.6f},{text}\n")
                 # 写入单帧JSON数据,key为帧索引,value为单帧数据
-                json_data[frame_idx] = json_single_frame_data
+                json_data[frame_idx_int] = json_single_frame_data
                 # 清空单帧数据
                 json_single_frame_data = []
             # 循环结束后，补充输出json文件
@@ -1279,6 +1297,8 @@ class BoxAnnotationTool(QMainWindow):
         is_essential = self.essential_frame_checkbox.isChecked()
         # 更新当前帧的关键帧状态
         self.key_frames[self.current_frame_index] = is_essential
+        # 根据关键帧状态更新标注组件显示
+        self.update_annotation_widgets()
 
     # 设置当前标注工具
     def set_current_tool(self,tool_type):
@@ -1549,11 +1569,13 @@ class BoxAnnotationTool(QMainWindow):
         })
 
         # 添加文本输入框
-        self.add_annotation_widget(annotation_id, label)
+        # self.add_annotation_widget(annotation_id, label)
 
         # 清空标签输入框
         #self.label_input.clear()
         
+    # 更新当前帧的关键帧状态
+
     # TODO:添加标注框的文本输入框，当使用自动化标注后需要改造
     def add_annotation_widget(self, annotation_id, label):
         """添加标注框的文本输入框"""
@@ -1575,9 +1597,9 @@ class BoxAnnotationTool(QMainWindow):
             'weight': text_input
         })
         # 将文本输入的内容加入标注信息的text中
-        self.annotations[self.current_frame_index][annotation_id-1]['text'] = text_input
+        self.annotations[self.current_frame_index][annotation_id - 1]['text'] = text_input
 
-        # 连接文本变化事件并将
+        # 连接文本变化事件
         text_input.textChanged.connect(lambda text, aid=annotation_id: self.update_annotation_text(aid, text))
         h_layout.addWidget(text_input)
         # 添加到布局
@@ -1587,13 +1609,8 @@ class BoxAnnotationTool(QMainWindow):
     def update_annotation_text(self, annotation_id, text):
         """更新标注框的文本信息"""
         # 检查当前帧是否有标注
-        if self.current_frame_index in self.annotations:
-            for anno in self.annotations[self.current_frame_index]:
-                if anno['id'] == annotation_id:
-                    anno['weight'] = text
-                    # 同步更新标注信息的text
-                    self.annotations[self.current_frame_index][annotation_id-1]['text'] = text
-                    break
+        if self.current_frame_index in self.annotation_widgets:
+            self.annotations[self.current_frame_index][annotation_id - 1]['text'] = text
 
     # 更新当前帧的标注框信息（拖动标注框）
     def update_annotation_position(self):
@@ -1602,8 +1619,8 @@ class BoxAnnotationTool(QMainWindow):
 
     # 更新标注组件
     def update_annotation_widgets(self):
-        """更新标注组件"""
-        # 清除现有控件
+        """更新输入框列表组件"""
+        # 清除输入框列表原有控件
         while self.annotations_layout.count() > 0:
             item = self.annotations_layout.takeAt(0)
             widget = item.widget()
@@ -1619,9 +1636,20 @@ class BoxAnnotationTool(QMainWindow):
                         sub_widget = sub_item.widget()
                         if sub_widget:
                             sub_widget.hide()
-
+        
+        # 只有当前帧时关键帧时，才显示输入框控件
+        current_frame_is_essential = self.key_frames.get(self.current_frame_index, False)
+        # 如果当前帧不是关键帧，直接返回
+        if current_frame_is_essential is False:
+            return
+        # 如果当前帧还没有在self.annotation_widgets中，先根据当前帧的标注框数量初始化输入框
+        if self.current_frame_index not in self.annotation_widgets and self.current_frame_index in self.annotations:
+            for i in range(len(self.annotations[self.current_frame_index])):
+                self.add_annotation_widget(i+1, f"猪{i+1}")
+            return
+        
         # 根据每一帧的控件信息添加当前帧的控件
-        if self.current_frame_index in self.annotation_widgets:
+        if current_frame_is_essential and self.current_frame_index in self.annotation_widgets:
             for item in self.annotation_widgets[self.current_frame_index]:
                 text_input = item['weight']
                 # 创建水平布局
@@ -1676,18 +1704,38 @@ class BoxAnnotationTool(QMainWindow):
     # 切换到下一帧
     def next_frame(self):
         """显示下一帧"""
-        # 检查是否有视频帧
-        if hasattr(self, 'video_frames') and self.video_frames:
-            # 检查是否已到达最后一帧
-            if self.current_frame_index < self.total_frames - 1:
+        # 尝试获取锁，如果获取失败（说明上一次调用还在执行），则直接返回
+        if not self.next_frame_lock.acquire(blocking=False):
+            return
+        try:
+            # 检查是否有视频载入
+            if not self.video_path:
+                QMessageBox.information(self, "提示", "请先加载视频")
+                return
+            # 检查是否有视频帧
+            if self.current_frame_index >= self.total_frame_count - 1:
+                QMessageBox.information(self, "提示", "已经是最后一帧")
+                return
+            # 如果当前帧的索引号小于self.total_frame_count的长度减一，说明下一帧已经处理，可以使用
+            if self.current_frame_index < self.total_frame_count - 1:
+                # 如果当前帧的索引号大于等于self.video_frames的长度减1，说明下一帧还没有持久化进self.video_frames，需要从视频帧队列中拉取新的帧信息
+                if self.video_type and self.current_frame_index >= len(self.video_frames) - 1:
+                    frame = self.frame_queue.get()
+                    '''
+                    if frame is None:
+                        self.total_frame_count = self.current_frame_index + 1
+                        self.update_frame_info()
+                        QMessageBox.information(self, "提示", "视频帧队列已空")
+                        return
+                    '''
+                    self.video_frames.append(frame)
                 self.current_frame_index += 1
                 self.display_current_frame()
                 self.update_frame_info()
-            else:
-                QMessageBox.information(self, "提示", "已经是最后一帧")
-        else:
-            QMessageBox.information(self, "提示", "请先加载视频")
-
+        finally:
+            # 无论执行是否成功，都确保释放锁
+            self.next_frame_lock.release()
+    
     # 浏览并选择输入视频路径
     def browse_input_video_path(self):
         """浏览并选择导入的输入图片集路径"""
