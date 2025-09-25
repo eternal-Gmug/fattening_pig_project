@@ -626,6 +626,7 @@ class BoxAnnotationTool(QMainWindow):
         exit_action = file_menu.addAction("退出")
         exit_action.triggered.connect(self.close)
 
+        '''
         # 编辑菜单
         edit_menu = menu_bar.addMenu("编辑")
         preferences_action = edit_menu.addAction("首选项")
@@ -638,6 +639,7 @@ class BoxAnnotationTool(QMainWindow):
 
         export_frames_action = process_menu.addAction("导出帧")
         export_frames_action.triggered.connect(self.export_annotated_video)
+        '''
 
         # 帮助菜单
         help_menu = menu_bar.addMenu("帮助")
@@ -653,7 +655,8 @@ class BoxAnnotationTool(QMainWindow):
         load_video_btn.setStyleSheet("QPushButton { padding: 4px 8px; border: none;}")
         load_video_btn.clicked.connect(self.load_video)
         tool_bar.addWidget(load_video_btn)
-
+        
+        '''
         tool_bar.addSeparator()
 
         run_model_btn = QPushButton("运行模型")
@@ -665,6 +668,7 @@ class BoxAnnotationTool(QMainWindow):
         export_frames_btn.setStyleSheet("QPushButton { padding: 4px 8px; border: none;}")
         export_frames_btn.clicked.connect(self.export_annotated_video)
         tool_bar.addWidget(export_frames_btn)
+        '''
 
     def create_main_content(self):
         """创建主内容区域"""
@@ -729,10 +733,17 @@ class BoxAnnotationTool(QMainWindow):
         # 关键帧复选框的状态改变时，更新当前帧的关键帧状态，并保存每一帧的关键帧状态
         self.essential_frame_checkbox.stateChanged.connect(self.update_essential_frame_state)
 
+         # 添加体重输入框
+        self.weight_input = QLineEdit()
+        self.weight_input.setPlaceholderText("输入体重...")
+        self.weight_input.setFixedWidth(100)
+        self.weight_input.textChanged.connect(self.update_frame_weight)
+        self.weight_input.setEnabled(self.key_frames.get(self.current_frame_index, False))  # 初始状态根据是否为关键帧设置
+
         essential_frame_layout.addWidget(self.essential_frame_label)
         essential_frame_layout.addWidget(self.essential_frame_checkbox)
+        essential_frame_layout.addWidget(self.weight_input)  # 添加输入框到勾选框右侧
         essential_frame_layout.addStretch()
-        
         info_layout.addLayout(top_info_layout)
         info_layout.addLayout(essential_frame_layout)
         left_layout.addWidget(info_group)
@@ -795,11 +806,13 @@ class BoxAnnotationTool(QMainWindow):
         props_group.setLayout(props_layout)
         annotation_layout.addWidget(props_group)
 
-        #TODO: 添加标注框列表滚动区域在多标注下需要滚动
+        '''
+        # 添加标注框列表滚动区域在多标注下需要滚动
         self.annotations_group = QGroupBox("标注框列表")
         self.annotations_layout = QVBoxLayout()
         self.annotations_group.setLayout(self.annotations_layout)
         annotation_layout.addWidget(self.annotations_group)
+        '''
 
         #添加重置该标签、上一帧、下一帧的按钮组
         control_group = QGroupBox("控制")
@@ -832,10 +845,10 @@ class BoxAnnotationTool(QMainWindow):
         annotation_layout.addStretch()
         right_panel.addTab(annotation_tab, "标注")
 
+        '''
         # 模型设置标签页
         model_tab = QWidget()
         model_layout = QVBoxLayout(model_tab)
-
         model_group = QGroupBox("模型设置")
         model_form_layout = QFormLayout()
 
@@ -858,6 +871,7 @@ class BoxAnnotationTool(QMainWindow):
 
         model_layout.addStretch()
         right_panel.addTab(model_tab, "模型")
+        '''
 
         # 输出设置标签页
         output_tab = QWidget()
@@ -914,7 +928,6 @@ class BoxAnnotationTool(QMainWindow):
     
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        
         # 确保视频显示区域居中
         self.video_display.parent().layout().setAlignment(self.video_display, Qt.AlignCenter)
 
@@ -1082,7 +1095,6 @@ class BoxAnnotationTool(QMainWindow):
             if self.video_frames:
                 self.display_current_frame()
                 self.update_frame_info()
-                # TODO: 这里需要根据yolov8的检测结果，为每一个检测框添加一个文本框(使用函数调用)，待讨论，看是否需要添加信息框
                 # 如果有模型检测结果，显示提示
                 if self.annotations:
                     #detected_count = sum(len(anns) for anns in self.annotations.values())
@@ -1140,8 +1152,6 @@ class BoxAnnotationTool(QMainWindow):
 
             self.video_display.setPixmap(QPixmap.fromImage(scaled_image))
 
-            # 更新标注组件
-            self.update_annotation_widgets()
 
     # 更新当前帧的图片信息（视频名称、总帧数、当前帧数、是否为关键帧、fps）
     def update_frame_info(self):
@@ -1150,6 +1160,14 @@ class BoxAnnotationTool(QMainWindow):
         self.frame_num_value.setText(f"{self.current_frame_index + 1}/{self.total_frame_count}")
         self.fps_value.setText(str(self.frame_rate))
         self.essential_frame_checkbox.setChecked(self.key_frames.get(self.current_frame_index, False))
+
+        # 更新体重输入框状态和内容
+        is_essential = self.key_frames.get(self.current_frame_index, False)
+        self.weight_input.setEnabled(is_essential)
+        if is_essential and self.current_frame_index in self.annotations and self.annotations[self.current_frame_index]:
+            self.weight_input.setText(self.annotations[self.current_frame_index][0].get('text', ''))
+        else:
+            self.weight_input.clear()
 
     # 保存项目标注信息到txt文件
     def save_project(self):
@@ -1233,17 +1251,16 @@ class BoxAnnotationTool(QMainWindow):
             QMessageBox.information(self, "成功", f"所有关键帧已保存到 {output_dir}文件夹中")
         except Exception as e:
             QMessageBox.warning(self, "错误", f"保存项目时出错: {e}")
-
+    
+    '''
     def open_preferences(self):
         """打开首选项设置"""
         # 具体实现代码暂不生成
         pass
-
     def run_model(self):
         """运行模型处理视频"""
         # 具体实现代码暂不生成
         pass
-
     def export_annotated_video(self):
         """导出带有标注的视频帧"""
         if not self.video_frames:
@@ -1284,7 +1301,7 @@ class BoxAnnotationTool(QMainWindow):
             QMessageBox.information(self, "成功", f"带标注的视频已导出到 {self.config['output_video_path']}")
         except Exception as e:
             QMessageBox.warning(self, "错误", f"导出视频时出错: {str(e)}")
-
+    '''
     def show_about(self):
         """显示关于对话框"""
         # 具体实现代码暂不生成
@@ -1297,8 +1314,23 @@ class BoxAnnotationTool(QMainWindow):
         is_essential = self.essential_frame_checkbox.isChecked()
         # 更新当前帧的关键帧状态
         self.key_frames[self.current_frame_index] = is_essential
-        # 根据关键帧状态更新标注组件显示
-        self.update_annotation_widgets()
+        # 根据关键帧状态控制体重输入框的启用/禁用
+        self.weight_input.setEnabled(is_essential)
+        # 如果是关键帧，从标注数据中恢复体重信息（如果有）
+        if is_essential and self.current_frame_index in self.annotations:
+            # 获取第一个标注的体重信息（因为现在每帧只有一个输入框）
+            if self.annotations[self.current_frame_index]:
+                self.weight_input.setText(self.annotations[self.current_frame_index][0].get('text', ''))
+        else:
+            # 如果不是关键帧，清空输入框
+            self.weight_input.clear()
+
+    # 更新当前帧的体重信息
+    def update_frame_weight(self, text):
+        """更新当前帧的体重信息"""
+        if self.current_frame_index in self.annotations and self.annotations[self.current_frame_index]:
+            # 将体重信息保存到第一个标注中（因为现在每帧只有一个输入框）
+            self.annotations[self.current_frame_index][0]['text'] = text
 
     # 设置当前标注工具
     def set_current_tool(self,tool_type):
@@ -1567,26 +1599,30 @@ class BoxAnnotationTool(QMainWindow):
             'text': '',
             'color': (self.current_color.red(), self.current_color.green(), self.current_color.blue())
         })
-
-        # 添加文本输入框
-        # self.add_annotation_widget(annotation_id, label)
-
         # 清空标签输入框
         #self.label_input.clear()
-        
-    # 更新当前帧的关键帧状态
 
-    # TODO:添加标注框的文本输入框，当使用自动化标注后需要改造
+        # 如果当前帧是关键帧，添加输入框（当前不需要）
+        if self.key_frames.get(self.current_frame_index, False):
+            self.add_annotation_widget(annotation_id, label)
+
+    # TODO:添加标注框的文本输入框，当使用自动化标注后需要改造（暂不改造）
     def add_annotation_widget(self, annotation_id, label):
         """添加标注框的文本输入框"""
+         # 检查当前帧是否为关键帧，只有关键帧才添加输入框
+        if not self.key_frames.get(self.current_frame_index, False):
+            return
+        
         # 确保当前帧有控件列表
         if self.current_frame_index not in self.annotation_widgets:
             self.annotation_widgets[self.current_frame_index] = []
+        '''
         # 创建水平布局
         h_layout = QHBoxLayout()
         # 创建标签
         label_widget = QLabel(label)
         h_layout.addWidget(label_widget)
+        '''
         # 创建文本输入框
         text_input = QLineEdit()
         text_input.setPlaceholderText(f"输入猪{annotation_id}的体重...")
@@ -1601,9 +1637,7 @@ class BoxAnnotationTool(QMainWindow):
 
         # 连接文本变化事件
         text_input.textChanged.connect(lambda text, aid=annotation_id: self.update_annotation_text(aid, text))
-        h_layout.addWidget(text_input)
-        # 添加到布局
-        self.annotations_layout.addLayout(h_layout)
+        # 由于我们已经删除了标注框列表，不再需要将输入框添加到布局中
 
     # 更新标注框的文本信息
     def update_annotation_text(self, annotation_id, text):
@@ -1617,7 +1651,9 @@ class BoxAnnotationTool(QMainWindow):
         """更新当前帧的标注框信息"""
         self.annotations[self.current_frame_index][self.dragging_annotation['id']-1] = self.dragging_annotation
 
-    # 更新标注组件
+    # 由于我们已经删除了标注框列表，不再需要清除现有控件或管理布局
+    # 关键帧的体重信息现在通过main_content中的weight_input控件管理
+    '''
     def update_annotation_widgets(self):
         """更新输入框列表组件"""
         # 清除输入框列表原有控件
@@ -1661,7 +1697,8 @@ class BoxAnnotationTool(QMainWindow):
                 # 显示控件
                 label_widget.show()
                 text_input.show()
-    
+    '''
+
     # 获取标注标签
     def get_annotation_label(self, annotation_id):
         """获取标注框的标签"""
@@ -1679,8 +1716,6 @@ class BoxAnnotationTool(QMainWindow):
             self.annotations.pop(self.current_frame_index)
             # 清除当前帧的标注组件
             self.annotation_widgets.pop(self.current_frame_index)
-            # 刷新标注组件
-            self.update_annotation_widgets()
             # 更新当前帧的图片信息
             self.display_current_frame()
         else:
