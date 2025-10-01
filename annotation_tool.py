@@ -1203,6 +1203,10 @@ class BoxAnnotationTool(QMainWindow):
         """保存标注信息到txt文件"""
         # 获取视频名称作为文件夹名
         video_name = os.path.splitext(os.path.basename(self.video_path))[0]
+        # 检查当前视频名称是否为空
+        if not video_name:
+            QMessageBox.warning(self, "视频名称为空", "请先加载视频文件。")
+            return
         # 确保输出目录存在，使用视频名称加时间戳作为子文件夹
         timestamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
         # 创建输出目录下的二级目录
@@ -1424,15 +1428,15 @@ class BoxAnnotationTool(QMainWindow):
                 if mapped_point.x() != -1 and mapped_point.y() != -1:
                     # 检查当前帧是否有标注框
                     if self.current_frame_index in self.annotations:
-                        # 先判断是否在边缘内部
-                        inner_result = self.is_mouse_in_annotation_inner(mapped_point)
-                        if inner_result[0]:
-                            self.dragging,self.dragging_annotation,self.drag_offset = inner_result
-                            self.video_display.setCursor(QCursor(Qt.ClosedHandCursor))
+                        # 先判断是否在标注框边缘
+                        edge_result = self.is_mouse_on_annotation_edge(mapped_point)
+                        if edge_result[0]:
+                            self.resizing,self.resize_anchor,self.resizing_annotation = edge_result
                         else:
-                            edge_result = self.is_mouse_on_annotation_edge(mapped_point)
-                            if edge_result[0]:
-                                self.resizing,self.resize_anchor,self.resizing_annotation = edge_result
+                            inner_result = self.is_mouse_in_annotation_inner(mapped_point)
+                            if inner_result[0]:
+                                self.dragging,self.dragging_annotation,self.drag_offset = inner_result
+                                self.video_display.setCursor(QCursor(Qt.ClosedHandCursor))
                 return True
             # 鼠标移动，拖动标注框
             elif event.type() == QEvent.MouseMove:
@@ -1791,6 +1795,10 @@ class BoxAnnotationTool(QMainWindow):
     # 标注工具组的控制组件按钮点击事件
     def reset_annotation(self):
         """重置当前图片的标注"""
+        # 检查是否有视频载入
+        if not self.video_path:
+            QMessageBox.information(self, "提示", "请先加载视频")
+            return
         if self.current_frame_index in self.annotations and self.current_frame_index in self.original_annotations:
             # 将当前帧的标注信息恢复到原始标注字典（作为备份），使用深拷贝创建独立副本
             self.annotations[self.current_frame_index] = copy.deepcopy(self.original_annotations[self.current_frame_index])
