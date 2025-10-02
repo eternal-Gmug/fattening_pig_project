@@ -821,6 +821,12 @@ class BoxAnnotationTool(QMainWindow):
         self.reset_btn = QPushButton("重置该标签")
         self.prev_frame_btn = QPushButton("上一帧")
         self.next_frame_btn = QPushButton("下一帧")
+        
+        # 添加k值输入框和前k帧、后k帧按钮
+        self.k_value_input = QLineEdit("5")  # 默认值为5
+        self.k_value_input.setFixedWidth(50)
+        self.prev_k_frame_btn = QPushButton("前k帧")
+        self.next_k_frame_btn = QPushButton("后k帧")
 
         # 连接按钮点击事件
         self.rect_tool_btn.clicked.connect(lambda: self.set_current_tool('rectangle'))
@@ -834,10 +840,17 @@ class BoxAnnotationTool(QMainWindow):
         self.reset_btn.clicked.connect(self.reset_annotation)
         self.prev_frame_btn.clicked.connect(self.prev_frame)
         self.next_frame_btn.clicked.connect(self.next_frame)
+        self.prev_k_frame_btn.clicked.connect(self.prev_k_frames)
+        self.next_k_frame_btn.clicked.connect(self.next_k_frames)
 
         control_layout.addWidget(self.reset_btn)
         control_layout.addWidget(self.prev_frame_btn)
         control_layout.addWidget(self.next_frame_btn)
+        control_layout.addSpacing(10)
+        control_layout.addWidget(QLabel("k值:"))
+        control_layout.addWidget(self.k_value_input)
+        control_layout.addWidget(self.prev_k_frame_btn)
+        control_layout.addWidget(self.next_k_frame_btn)
 
         control_group.setLayout(control_layout)
         annotation_layout.addWidget(control_group)
@@ -1177,11 +1190,11 @@ class BoxAnnotationTool(QMainWindow):
         self.essential_frame_checkbox.setChecked(self.key_frames.get(self.current_frame_index, False))
         # 更新体重输入框状态和内容
         is_essential = self.key_frames.get(self.current_frame_index, False)
-        self.weight_input.setEnabled(is_essential)
+        # 始终启用体重输入框，不再根据关键帧状态控制
+        self.weight_input.setEnabled(True)
         if is_essential and self.current_frame_index in self.annotations and self.annotations[self.current_frame_index]:
             self.weight_input.setText(self.annotations[self.current_frame_index][0].get('text', ''))
-        else:
-            self.weight_input.clear()
+        # 不再自动清空输入框，避免用户输入的第一个字符丢失
         # 更新当前图片的类别信息
         if self.current_frame_index in self.annotations and self.annotations[self.current_frame_index]:
             # 如果当前帧有标注，获取标注的所有类别(可重复）并以横向布局显示
@@ -1198,18 +1211,25 @@ class BoxAnnotationTool(QMainWindow):
                 category_label.setStyleSheet("font-size: 12px; color: #666;")
                 self.category_layout.addWidget(category_label)
 
-    # 保存项目标注信息到txt文件
+    # 保存项目标注信息到txt和json文件
     def save_project(self):
-        """保存标注信息到txt文件"""
+        """保存标注信息到txt和json文件，每个帧一个文件，txt和json分开保存"""
         # 获取视频名称作为文件夹名
         video_name = os.path.splitext(os.path.basename(self.video_path))[0]
         # 确保输出目录存在，使用视频名称加时间戳作为子文件夹
         timestamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
         # 创建输出目录下的二级目录
         file_name = video_name + '_' + timestamp
-        output_dir = os.path.join(self.config['output_txt_path'], file_name)
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+        
+        # 创建两个不同的目录，分别用于保存txt和json文件
+        txt_output_dir = os.path.join(self.config['output_txt_path'], file_name, 'txt')
+        json_output_dir = os.path.join(self.config['output_txt_path'], file_name, 'json')
+        
+        # 创建目录
+        if not os.path.exists(txt_output_dir):
+            os.makedirs(txt_output_dir)
+        if not os.path.exists(json_output_dir):
+            os.makedirs(json_output_dir)
 
         # 准备保存的数据
         project_data = {
@@ -1220,10 +1240,8 @@ class BoxAnnotationTool(QMainWindow):
             # 图片帧标注信息
             'annotations': self.annotations
         }
-        # 保存总的json数据
-        json_data = {}
 
-        # 保存到TXT文件，每个帧一个文件
+        # 保存到TXT和JSON文件，每个帧一个文件
         try:
             for frame_idx, annotations in project_data['annotations'].items():
                 # 将frame_idx从浮点数转换为整数
@@ -1232,9 +1250,14 @@ class BoxAnnotationTool(QMainWindow):
                 if not self.key_frames.get(frame_idx_int, False):
                     continue
 
-                # 为每个帧创建单独的TXT文件，文件名即为帧索引
-                txt_file_name = f"{frame_idx_int}.txt"
-                txt_file_path = os.path.join(output_dir, txt_file_name)
+                # 为每个帧创建单独的TXT文件，文件名格式为frame_xxxxx.txt
+                txt_file_name = f"frame_{frame_idx_int:05d}.txt"
+                txt_file_path = os.path.join(txt_output_dir, txt_file_name)
+                
+                # 为每个帧创建单独的JSON文件，文件名格式为frame_xxxxx.json
+                json_file_name = f"frame_{frame_idx_int:05d}.json"
+                json_file_path = os.path.join(json_output_dir, json_file_name)
+                
                 # 存储单帧JSON数据
                 json_single_frame_data = []
                 
@@ -1269,15 +1292,16 @@ class BoxAnnotationTool(QMainWindow):
                             'text': text,
                         })
                         f.write(f"{class_id},{x_center:.6f},{y_center:.6f},{width:.6f},{height:.6f},{text}\n")
-                # 写入单帧JSON数据,key为帧索引,value为单帧数据
-                json_data[frame_idx_int] = json_single_frame_data
+                
+                # 写入单帧JSON文件
+                with open(json_file_path, 'w', encoding='utf-8') as f:
+                    json.dump(json_single_frame_data, f, ensure_ascii=False, indent=4)
+                
                 # 清空单帧数据
                 json_single_frame_data = []
-            # 循环结束后，补充输出json文件
-            json_file_path = os.path.join(output_dir, f"{video_name}.json")
-            with open(json_file_path, 'w', encoding='utf-8') as f:
-                json.dump(json_data, f, ensure_ascii=False, indent=4)    # 输出的缩进为4格
-            QMessageBox.information(self, "成功", f"所有关键帧已保存到 {output_dir}文件夹中")
+                
+            # 显示成功消息
+            QMessageBox.information(self, "成功", f"所有关键帧已保存\nTXT文件目录: {txt_output_dir}\nJSON文件目录: {json_output_dir}")
         except Exception as e:
             QMessageBox.warning(self, "错误", f"保存项目时出错: {e}")
     
@@ -1344,23 +1368,44 @@ class BoxAnnotationTool(QMainWindow):
         is_essential = self.essential_frame_checkbox.isChecked()
         # 更新当前帧的关键帧状态
         self.key_frames[self.current_frame_index] = is_essential
-        # 根据关键帧状态控制体重输入框的启用/禁用
-        self.weight_input.setEnabled(is_essential)
+        # 始终启用体重输入框，不再根据关键帧状态控制
+        self.weight_input.setEnabled(True)
         # 如果是关键帧，从标注数据中恢复体重信息（如果有）
         if is_essential and self.current_frame_index in self.annotations:
             # 获取第一个标注的体重信息（因为现在每帧只有一个输入框）
             if self.annotations[self.current_frame_index]:
                 self.weight_input.setText(self.annotations[self.current_frame_index][0].get('text', ''))
-        else:
-            # 如果不是关键帧，清空输入框
-            self.weight_input.clear()
+        # 不再自动清空输入框，避免用户输入的第一个字符丢失
 
     # 更新当前帧的体重信息
     def update_frame_weight(self, text):
         """更新当前帧的体重信息"""
+        # 如果文本框非空，自动将当前帧标记为关键帧
+        if text.strip() and not self.key_frames.get(self.current_frame_index, False):
+            self.key_frames[self.current_frame_index] = True
+            self.essential_frame_checkbox.setChecked(True)
+            self.weight_input.setEnabled(True)
+            
+        # 更新标注数据中的体重信息
         if self.current_frame_index in self.annotations and self.annotations[self.current_frame_index]:
             # 将体重信息保存到第一个标注中（因为现在每帧只有一个输入框）
             self.annotations[self.current_frame_index][0]['text'] = text
+    
+    # 处理键盘事件
+    def keyPressEvent(self, event):
+        """处理键盘快捷键"""
+        # 获取按键的ASCII码
+        key = event.key()
+        
+        # 'A'/'a'键切换到上一帧
+        if key == Qt.Key_A:
+            self.prev_frame()
+        # 'D'/'d'键切换到下一帧
+        elif key == Qt.Key_D:
+            self.next_frame()
+        else:
+            # 其他按键调用父类处理
+            super().keyPressEvent(event)
 
     # 设置当前标注工具
     def set_current_tool(self,tool_type):
@@ -1779,6 +1824,86 @@ class BoxAnnotationTool(QMainWindow):
                 text_input.show()
     '''
 
+    # 保存当前帧的标注信息
+    def save_current_frame_annotation(self):
+        """保存当前帧的标注信息到txt和json文件"""
+        # 检查当前帧是否有关键帧标记
+        if not self.key_frames.get(self.current_frame_index, False):
+            return
+            
+        # 检查当前帧是否有标注数据
+        if self.current_frame_index not in self.annotations:
+            return
+            
+        try:
+            # 获取视频名称作为文件夹名
+            video_name = os.path.splitext(os.path.basename(self.video_path))[0]
+            timestamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
+            file_name = video_name + '_' + timestamp
+            
+            # 创建两个不同的目录，分别用于保存txt和json文件
+            txt_output_dir = os.path.join(self.config['output_txt_path'], file_name, 'txt')
+            json_output_dir = os.path.join(self.config['output_txt_path'], file_name, 'json')
+            
+            # 创建目录
+            if not os.path.exists(txt_output_dir):
+                os.makedirs(txt_output_dir)
+            if not os.path.exists(json_output_dir):
+                os.makedirs(json_output_dir)
+                
+            # 为当前帧创建单独的TXT文件，文件名格式为frame_xxxxx.txt
+            txt_file_name = f"frame_{self.current_frame_index:05d}.txt"
+            txt_file_path = os.path.join(txt_output_dir, txt_file_name)
+            
+            # 为当前帧创建单独的JSON文件，文件名格式为frame_xxxxx.json
+            json_file_name = f"frame_{self.current_frame_index:05d}.json"
+            json_file_path = os.path.join(json_output_dir, json_file_name)
+            
+            # 存储单帧JSON数据
+            json_single_frame_data = []
+            
+            # 输出txt文件
+            with open(txt_file_path, 'w', encoding='utf-8') as f:
+                # 处理当前帧的所有标注信息
+                for ann in self.annotations[self.current_frame_index]:
+                    x_min, y_min = ann['x1'], ann['y1']
+                    x_max, y_max = ann['x2'], ann['y2']
+                    class_id = ann['class_id']
+                    text = ann['text']
+                    # 获取原始视频帧的尺寸（从第一帧获取）
+                    if self.video_frames:
+                        frame_height, frame_width = self.video_frames[0].shape[:2]
+                        # 计算归一化坐标
+                        x_center = (x_min + x_max) / 2 / frame_width
+                        y_center = (y_min + y_max) / 2 / frame_height
+                        width = (x_max - x_min) / frame_width
+                        height = (y_max - y_min) / frame_height
+                    else:
+                        x_center = 0
+                        y_center = 0
+                        width = 0
+                        height = 0
+                    # 写入JSON数据中
+                    json_single_frame_data.append({
+                        'class_id': class_id,
+                        'x_center': x_center,
+                        'y_center': y_center,
+                        'width': width,
+                        'height': height,
+                        'text': text,
+                    })
+                    f.write(f"{class_id},{x_center:.6f},{y_center:.6f},{width:.6f},{height:.6f},{text}\n")
+            
+            # 写入单帧JSON文件
+            with open(json_file_path, 'w', encoding='utf-8') as f:
+                json.dump(json_single_frame_data, f, ensure_ascii=False, indent=4)
+                
+            # 可以在这里添加日志记录或调试信息
+            # print(f"帧 {self.current_frame_index} 的标注已保存")
+        except Exception as e:
+            # 静默处理错误，不影响用户体验
+            print(f"保存当前帧标注时出错: {e}")
+    
     # 获取标注标签
     def get_annotation_label(self, annotation_id):
         """获取标注框的标签"""
@@ -1841,6 +1966,98 @@ class BoxAnnotationTool(QMainWindow):
                     frame = self.frame_queue.get()
                     self.video_frames.append(frame)
                 self.current_frame_index += 1
+                self.display_current_frame()
+                self.update_frame_info()
+        finally:
+            # 无论执行是否成功，都确保释放锁
+            self.next_frame_lock.release()
+
+    # 切换到上k帧
+    def prev_k_frames(self):
+        """显示前k帧"""
+        # 检查是否有视频帧
+        if hasattr(self, 'video_frames') and self.video_frames:
+            # 获取k值
+            try:
+                k = int(self.k_value_input.text())
+                if k <= 0:
+                    QMessageBox.information(self, "提示", "k值必须为正整数")
+                    return
+            except ValueError:
+                QMessageBox.information(self, "提示", "请输入有效的k值")
+                return
+            
+            # 计算新的帧索引
+            new_index = self.current_frame_index - k
+            # 确保不会小于0
+            if new_index < 0:
+                new_index = 0
+                QMessageBox.information(self, "提示", f"已到达第一帧，仅返回 {self.current_frame_index} 帧")
+            
+            # 更新帧索引并显示
+            if new_index != self.current_frame_index:
+                self.current_frame_index = new_index
+                self.display_current_frame()
+                self.update_frame_info()
+        else:
+            QMessageBox.information(self, "提示", "请先加载视频")
+            
+    # 切换到下k帧
+    def next_k_frames(self):
+        """显示后k帧"""
+        # 尝试获取锁，如果获取失败（说明上一次调用还在执行），则直接返回
+        if not self.next_frame_lock.acquire(blocking=False):
+            return
+        try:
+            # 检查是否有视频载入
+            if not self.video_path:
+                QMessageBox.information(self, "提示", "请先加载视频")
+                return
+            
+            # 获取k值
+            try:
+                k = int(self.k_value_input.text())
+                if k <= 0:
+                    QMessageBox.information(self, "提示", "k值必须为正整数")
+                    return
+            except ValueError:
+                QMessageBox.information(self, "提示", "请输入有效的k值")
+                return
+            
+            # 检查是否已到达或超过最后一帧
+            if self.current_frame_index >= self.total_frame_count - 1:
+                # 如果当前还在加载中，等待加载完成
+                if self.loading:
+                    # 创建一个会自动关闭的消息框
+                    QMessageBox.information(self, "提示", "请慢点哦~ 视频君还在加载中")
+                    return
+                QMessageBox.information(self, "提示", "已经是最后一帧")
+                return
+            
+            # 计算新的帧索引
+            new_index = self.current_frame_index + k
+            # 确保不会超过总帧数
+            if new_index >= self.total_frame_count - 1:
+                new_index = self.total_frame_count - 1
+                QMessageBox.information(self, "提示", f"已到达最后一帧，仅前进 {new_index - self.current_frame_index} 帧")
+            
+            # 更新帧索引并显示
+            if new_index != self.current_frame_index:
+                # 如果视频帧还没有加载到目标帧，需要确保从队列中加载足够的帧
+                if self.video_type and new_index >= len(self.video_frames):
+                    # 需要加载的帧数
+                    needed_frames = new_index - len(self.video_frames) + 1
+                    # 从队列中加载帧
+                    for _ in range(needed_frames):
+                        if not self.frame_queue.empty():
+                            frame = self.frame_queue.get()
+                            self.video_frames.append(frame)
+                        else:
+                            # 如果队列中没有足够的帧，就加载到队列中现有的最后一帧
+                            break
+                
+                # 更新索引并显示帧
+                self.current_frame_index = min(new_index, len(self.video_frames) - 1)
                 self.display_current_frame()
                 self.update_frame_info()
         finally:
