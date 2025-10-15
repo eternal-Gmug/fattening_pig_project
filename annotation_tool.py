@@ -11,7 +11,7 @@ import onnxdealA
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QPushButton, QLabel, QMessageBox, QFrame, QFileDialog, QSlider, QGroupBox, QFormLayout,
                               QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QSizePolicy)
-from PySide6.QtCore import Qt, QTimer, QEvent, QPoint
+from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, QRect
 from PySide6.QtGui import QFont, QPixmap, QCursor, QColor, QImage
 
 class SegmentationAnnotationTool(QMainWindow):
@@ -542,7 +542,7 @@ class BoxAnnotationTool(QMainWindow):
         self.resize(1200, 800)
         # 添加线程锁，用于解决next_frame连点问题
         self.next_frame_lock = threading.Lock()
-        self.loading = False              # 是否正在加载视频
+        self.loading = False           # 是否正在加载视频
         # 视频帧相关变量
         self.video_frames = []         # 存储所有视频帧
         self.video_path = ""           # 视频的输入路径
@@ -572,10 +572,12 @@ class BoxAnnotationTool(QMainWindow):
         self.resizing = False          # 是否正在调整标注框大小
         self.resize_anchor = None      # 调整大小的锚点位置('n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw')
         self.resizing_annotation = None   # 当前正在调整大小的标注
+        # 文件保存相关变量
+        self.saving_timestamp = None   # 记录当前项目第一次保存的时间戳
 
         # 初始化配置
         self.config = {
-            'default_input_path': './input_videos',
+            'default_input_path': './input_atlas',
             'output_txt_path': './output',
             'output_video_path': './processed_videos',
             'background_color': '#f0f0f0',
@@ -740,7 +742,6 @@ class BoxAnnotationTool(QMainWindow):
         self.weight_input.setPlaceholderText("输入体重...")
         self.weight_input.setFixedWidth(100)
         self.weight_input.textChanged.connect(self.update_frame_weight)
-        self.weight_input.setEnabled(self.key_frames.get(self.current_frame_index, False))  # 初始状态根据是否为关键帧设置
 
         essential_frame_layout.addWidget(self.essential_frame_label)
         essential_frame_layout.addWidget(self.essential_frame_checkbox)
@@ -816,7 +817,11 @@ class BoxAnnotationTool(QMainWindow):
         
         #添加重置该标签、上一帧、下一帧的按钮组
         control_group = QGroupBox("控制")
-        control_layout = QHBoxLayout()
+        # 创建一个垂直布局作为主布局
+        main_control_layout = QVBoxLayout()
+
+        # 第一行布局：重置按钮和上下帧按钮
+        first_row_layout = QHBoxLayout()
 
         self.reset_btn = QPushButton("重置该标签")
         self.prev_frame_btn = QPushButton("上一帧")
@@ -843,48 +848,32 @@ class BoxAnnotationTool(QMainWindow):
         self.prev_k_frame_btn.clicked.connect(self.prev_k_frames)
         self.next_k_frame_btn.clicked.connect(self.next_k_frames)
 
-        control_layout.addWidget(self.reset_btn)
-        control_layout.addWidget(self.prev_frame_btn)
-        control_layout.addWidget(self.next_frame_btn)
-        control_layout.addSpacing(10)
-        control_layout.addWidget(QLabel("k值:"))
-        control_layout.addWidget(self.k_value_input)
-        control_layout.addWidget(self.prev_k_frame_btn)
-        control_layout.addWidget(self.next_k_frame_btn)
+        # 将按钮添加到第一行布局
+        first_row_layout.addWidget(self.reset_btn)
+        first_row_layout.addWidget(self.prev_frame_btn)
+        first_row_layout.addWidget(self.next_frame_btn)
 
-        control_group.setLayout(control_layout)
+        # 创建第二行布局：k值相关组件
+        second_row_layout = QHBoxLayout()
+        # 将k值控制布局添加到第二行布局
+        k_label = QLabel("k值:")
+        k_label.setAlignment(Qt.AlignCenter)
+        # 设置加粗
+        k_label.setStyleSheet("font-weight: bold;")
+        second_row_layout.addWidget(k_label)
+        second_row_layout.addWidget(self.k_value_input)
+        second_row_layout.addWidget(self.prev_k_frame_btn)
+        second_row_layout.addWidget(self.next_k_frame_btn)
+        
+        # 将两行布局添加到主布局
+        main_control_layout.addLayout(first_row_layout)
+        main_control_layout.addLayout(second_row_layout)
+    
+        control_group.setLayout(main_control_layout)
         annotation_layout.addWidget(control_group)
 
         annotation_layout.addStretch()
         right_panel.addTab(annotation_tab, "标注")
-
-        '''
-        # 模型设置标签页
-        model_tab = QWidget()
-        model_layout = QVBoxLayout(model_tab)
-        model_group = QGroupBox("模型设置")
-        model_form_layout = QFormLayout()
-
-        self.model_path_input = QLineEdit(self.config['model_path'])
-        self.browse_model_btn = QPushButton("浏览...")
-        self.conf_threshold_slider = QSlider(Qt.Horizontal)
-        self.conf_threshold_slider.setRange(0, 100)
-        self.conf_threshold_slider.setValue(50)
-        self.iou_threshold_slider = QSlider(Qt.Horizontal)
-        self.iou_threshold_slider.setRange(0, 100)
-        self.iou_threshold_slider.setValue(30)
-
-        model_form_layout.addRow("模型路径:", self.model_path_input)
-        model_form_layout.addRow("", self.browse_model_btn)
-        model_form_layout.addRow("置信度阈值 (%):", self.conf_threshold_slider)
-        model_form_layout.addRow("IOU阈值 (%):", self.iou_threshold_slider)
-
-        model_group.setLayout(model_form_layout)
-        model_layout.addWidget(model_group)
-
-        model_layout.addStretch()
-        right_panel.addTab(model_tab, "模型")
-        '''
 
         # 输出设置标签页
         output_tab = QWidget()
@@ -910,25 +899,12 @@ class BoxAnnotationTool(QMainWindow):
         self.browse_output_video_btn = QPushButton("更改输出标注视频帧路径")
         self.browse_output_video_btn.clicked.connect(self.browse_video_directory)
         
-        '''
-        self.frame_format_combo = QComboBox()
-        self.frame_format_combo.addItems(['jpg', 'png', 'bmp'])
-        self.frame_quality_slider = QSlider(Qt.Horizontal)
-        self.frame_quality_slider.setRange(0, 100)
-        self.frame_quality_slider.setValue(90)
-        '''
-
         output_form_layout.addRow("输入图片集路径:", self.video_path_input)
         output_form_layout.addRow("", self.browse_input_btn)
         output_form_layout.addRow("输出参数文件路径:", self.output_txt_path_input)
         output_form_layout.addRow("", self.browse_output_btn)
         output_form_layout.addRow("输出标注视频图像帧路径:", self.output_video_path_input)
         output_form_layout.addRow("", self.browse_output_video_btn)
-
-        '''
-        output_form_layout.addRow("帧格式:", self.frame_format_combo)
-        output_form_layout.addRow("图像质量 (%):", self.frame_quality_slider)
-        '''
 
         output_group.setLayout(output_form_layout)
         output_layout.addWidget(output_group)
@@ -1188,13 +1164,10 @@ class BoxAnnotationTool(QMainWindow):
             self.frame_num_value.setText(f"{self.current_frame_index + 1}/{self.total_frame_count}")
         self.fps_value.setText(str(self.frame_rate))
         self.essential_frame_checkbox.setChecked(self.key_frames.get(self.current_frame_index, False))
-        # 更新体重输入框状态和内容
-        is_essential = self.key_frames.get(self.current_frame_index, False)
-        # 始终启用体重输入框，不再根据关键帧状态控制
-        self.weight_input.setEnabled(True)
-        if is_essential and self.current_frame_index in self.annotations and self.annotations[self.current_frame_index]:
+        if  self.current_frame_index in self.annotations and self.annotations[self.current_frame_index]:
             self.weight_input.setText(self.annotations[self.current_frame_index][0].get('text', ''))
-        # 不再自动清空输入框，避免用户输入的第一个字符丢失
+        else:
+            self.weight_input.setText('')
         # 更新当前图片的类别信息
         if self.current_frame_index in self.annotations and self.annotations[self.current_frame_index]:
             # 如果当前帧有标注，获取标注的所有类别(可重复）并以横向布局显示
@@ -1210,10 +1183,13 @@ class BoxAnnotationTool(QMainWindow):
                 category_label = QLabel(f"{self.classes.get(category, category)}")
                 category_label.setStyleSheet("font-size: 12px; color: #666;")
                 self.category_layout.addWidget(category_label)
+        # 如果焦点在体重输入框上，消除输入框的焦点
+        if self.weight_input.hasFocus():
+            self.weight_input.clearFocus()
 
     # 保存项目标注信息到txt和json文件
     def save_project(self):
-        """保存标注信息到txt和json文件，每个帧一个文件，txt和json分开保存"""
+        """保存标注信息到txt和json文件,每个帧一个文件,txt和json分开保存"""
         # 获取视频名称作为文件夹名
         video_name = os.path.splitext(os.path.basename(self.video_path))[0]
         # 检查当前视频名称是否为空
@@ -1221,9 +1197,10 @@ class BoxAnnotationTool(QMainWindow):
             QMessageBox.warning(self, "视频名称为空", "请先加载视频文件。")
             return
         # 确保输出目录存在，使用视频名称加时间戳作为子文件夹
-        timestamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
+        if self.saving_timestamp is None:
+            self.saving_timestamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
         # 创建输出目录下的二级目录
-        file_name = video_name + '_' + timestamp
+        file_name = video_name + '_' + self.saving_timestamp
         
         # 创建两个不同的目录，分别用于保存txt和json文件
         txt_output_dir = os.path.join(self.config['output_txt_path'], file_name, 'txt')
@@ -1372,14 +1349,9 @@ class BoxAnnotationTool(QMainWindow):
         is_essential = self.essential_frame_checkbox.isChecked()
         # 更新当前帧的关键帧状态
         self.key_frames[self.current_frame_index] = is_essential
-        # 始终启用体重输入框，不再根据关键帧状态控制
-        self.weight_input.setEnabled(True)
-        # 如果是关键帧，从标注数据中恢复体重信息（如果有）
-        if is_essential and self.current_frame_index in self.annotations:
-            # 获取第一个标注的体重信息（因为现在每帧只有一个输入框）
-            if self.annotations[self.current_frame_index]:
-                self.weight_input.setText(self.annotations[self.current_frame_index][0].get('text', ''))
-        # 不再自动清空输入框，避免用户输入的第一个字符丢失
+        # 如果annotations中不存在当前帧的标注，创建一个空列表
+        if self.current_frame_index not in self.annotations:
+            self.annotations[self.current_frame_index] = []
 
     # 更新当前帧的体重信息
     def update_frame_weight(self, text):
@@ -1388,7 +1360,10 @@ class BoxAnnotationTool(QMainWindow):
         if text.strip() and not self.key_frames.get(self.current_frame_index, False):
             self.key_frames[self.current_frame_index] = True
             self.essential_frame_checkbox.setChecked(True)
-            self.weight_input.setEnabled(True)
+        # 如果文本框为空，自动将当前帧标记为非关键帧
+        elif not text.strip():
+            self.key_frames[self.current_frame_index] = False
+            self.essential_frame_checkbox.setChecked(False)
             
         # 更新标注数据中的体重信息
         if self.current_frame_index in self.annotations and self.annotations[self.current_frame_index]:
@@ -1402,10 +1377,10 @@ class BoxAnnotationTool(QMainWindow):
         key = event.key()
         
         # 'A'/'a'键切换到上一帧
-        if key == Qt.Key_A:
+        if key == Qt.Key_A or key == Qt.Key_Left:
             self.prev_frame()
         # 'D'/'d'键切换到下一帧
-        elif key == Qt.Key_D:
+        elif key == Qt.Key_D or key == Qt.Key_Right:
             self.next_frame()
         else:
             # 其他按键调用父类处理
@@ -1548,6 +1523,23 @@ class BoxAnnotationTool(QMainWindow):
                 self.video_display.setCursor(QCursor(Qt.OpenHandCursor))
                 return
         self.video_display.setCursor(QCursor(Qt.ArrowCursor))
+
+    # 重写鼠标按下事件，实现点击页面其他地方时消除输入框焦点
+    def mousePressEvent(self, event):
+        # 调用父类的mousePressEvent以确保原有功能正常
+        super().mousePressEvent(event)
+
+        # 检查当前焦点是否在体重输入框上，如果不在，切换焦点保证快捷键的正常运行
+        if self.weight_input.hasFocus():
+            # 获取鼠标点击的位置
+            click_pos = event.pos()
+            # 将输入框的坐标转换为全局坐标进行比较
+            input_rect = QRect(self.weight_input.mapToGlobal(self.weight_input.rect().topLeft()), self.weight_input.size())
+            
+            # 检查点击位置是否在输入框之外
+            if not input_rect.contains(click_pos):
+                # 清除输入框的焦点
+                self.weight_input.clearFocus()
 
     # 将显示窗口的坐标映射到原始视频帧的坐标
     def map_to_original_frame(self, point):
