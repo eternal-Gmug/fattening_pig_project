@@ -10,10 +10,11 @@ import math
 import onnxdealA
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QPushButton, QLabel, QMessageBox, QFrame, QFileDialog, QSlider, QGroupBox, QFormLayout,
-                              QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QSizePolicy)
-from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, QRect
+                              QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QSizePolicy,QStyle,QInputDialog)
+from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, QRect,QSize
 from PySide6.QtGui import QFont, QPixmap, QCursor, QColor, QImage
 
+# 分割标注工具（目前可能不需要）
 class SegmentationAnnotationTool(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -478,9 +479,19 @@ class SelectionWindow(QMainWindow):
         
         # 分割标注工具按钮
         self.segmentation_annotation_btn = QPushButton("分割标注")
+        self.segmentation_annotation_btn.setStyleSheet("""
+            QPushButton:disabled {
+            background-color: #f0f0f0;
+            color: #808080;
+            padding: 12px 24px; 
+            font-size: 16px; 
+            border-radius: 8px; 
+            border: 2px solid #d0d0d0;
+            }
+        """)
+        self.segmentation_annotation_btn.setEnabled(False)
         self.segmentation_annotation_btn.clicked.connect(self.open_segmentation_annotation)
         buttons_layout.addWidget(self.segmentation_annotation_btn)
-
         
         self.main_layout.addWidget(buttons_frame)
     
@@ -490,7 +501,7 @@ class SelectionWindow(QMainWindow):
         bottom_layout = QHBoxLayout(bottom_frame)
         bottom_layout.setContentsMargins(20, 10, 20, 10)
         
-        version_label = QLabel("版本 1.0.0")
+        version_label = QLabel("版本 1.6.0")
         version_label.setAlignment(Qt.AlignCenter)
         
         bottom_layout.addWidget(version_label)
@@ -510,14 +521,22 @@ class SelectionWindow(QMainWindow):
             self.hide()
             # 创建并显示方框标注工具窗口
             self.box_annotation_window = BoxAnnotationTool()
-            self.box_annotation_window.show()
+            original_close_event = self.box_annotation_window.closeEvent
+            # 重写closeEvent方法，确保先调用原始方法再显示选择窗口
+            def new_close_event(event):
+                # 调用原始的closeEvent方法进行资源清理
+                original_close_event(event)
+                # 显示选择窗口
+                self.show_after_close(event)
             # 连接关闭信号
-            self.box_annotation_window.closeEvent = lambda event: self.show_after_close(event)
+            self.box_annotation_window.closeEvent = new_close_event
+            self.box_annotation_window.show()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"打开方框标注工具时出错: {str(e)}")
             self.show()
     
     def open_segmentation_annotation(self):
+        '''
         try:
             # 隐藏当前选择窗口
             self.hide()
@@ -529,12 +548,15 @@ class SelectionWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"打开分割标注工具时出错: {str(e)}")
             self.show()
-    
+        '''
+        pass
+
     def show_after_close(self, event):
         """当子窗口关闭后，显示选择窗口"""
         self.show()
         event.accept()
 
+# 方框标注工具
 class BoxAnnotationTool(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -556,7 +578,6 @@ class BoxAnnotationTool(QMainWindow):
         # 标注相关变量
         self.original_annotations = {}  # 存储原始标注信息（作为备份）
         self.annotations = {}          # 存储所有标注信息
-        # self.annotation_widgets = {}   # 存储所有标注框的文本输入框{frameindex:[{annotationid:widget},{annotationid:widget}]}
         self.current_tool = None       # 当前选中的标注工具
         # 标注框绘制相关变量
         self.drawing = False           # 是否正在绘制标注
@@ -572,8 +593,9 @@ class BoxAnnotationTool(QMainWindow):
         self.resizing = False          # 是否正在调整标注框大小
         self.resize_anchor = None      # 调整大小的锚点位置('n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw')
         self.resizing_annotation = None   # 当前正在调整大小的标注
-        # 文件保存相关变量
-        self.saving_timestamp = None   # 记录当前项目第一次保存的时间戳
+        # 标签和高亮相关变量
+        self.selected_annotation = None   # 当前帧被选定的标注框
+        self.category_labels = {}      # 存储右侧窗口中的类别标签组件
 
         # 初始化配置
         self.config = {
@@ -630,21 +652,6 @@ class BoxAnnotationTool(QMainWindow):
         exit_action = file_menu.addAction("退出")
         exit_action.triggered.connect(self.close)
 
-        '''
-        # 编辑菜单
-        edit_menu = menu_bar.addMenu("编辑")
-        preferences_action = edit_menu.addAction("首选项")
-        preferences_action.triggered.connect(self.open_preferences)
-
-        # 处理菜单
-        process_menu = menu_bar.addMenu("处理")
-        run_model_action = process_menu.addAction("运行模型")
-        run_model_action.triggered.connect(self.run_model)
-
-        export_frames_action = process_menu.addAction("导出帧")
-        export_frames_action.triggered.connect(self.export_annotated_video)
-        '''
-
         # 帮助菜单
         help_menu = menu_bar.addMenu("帮助")
         about_action = help_menu.addAction("关于")
@@ -658,21 +665,7 @@ class BoxAnnotationTool(QMainWindow):
         load_video_btn = QPushButton("加载文件")
         load_video_btn.setStyleSheet("QPushButton { padding: 4px 8px; border: none;}")
         load_video_btn.clicked.connect(self.load_video)
-        tool_bar.addWidget(load_video_btn)
-        
-        '''
-        tool_bar.addSeparator()
-
-        run_model_btn = QPushButton("运行模型")
-        run_model_btn.setStyleSheet("QPushButton { padding: 4px 8px;border: none;}")
-        run_model_btn.clicked.connect(self.run_model)
-        tool_bar.addWidget(run_model_btn)
-
-        export_frames_btn = QPushButton("导出帧")
-        export_frames_btn.setStyleSheet("QPushButton { padding: 4px 8px; border: none;}")
-        export_frames_btn.clicked.connect(self.export_annotated_video)
-        tool_bar.addWidget(export_frames_btn)
-        '''
+        tool_bar.addWidget(load_video_btn) 
 
     def create_main_content(self):
         """创建主内容区域"""
@@ -783,11 +776,9 @@ class BoxAnnotationTool(QMainWindow):
 
         self.mouse_btn = QPushButton("鼠标拖动")
         self.rect_tool_btn = QPushButton("矩形")
-        # self.point_tool_btn = QPushButton("点")
 
         tool_layout.addWidget(self.mouse_btn)
         tool_layout.addWidget(self.rect_tool_btn)
-        # tool_layout.addWidget(self.point_tool_btn)
 
         tool_group.setLayout(tool_layout)
         annotation_layout.addWidget(tool_group)
@@ -796,13 +787,11 @@ class BoxAnnotationTool(QMainWindow):
         props_group = QGroupBox("标注属性")
         props_layout = QFormLayout()
 
-        #self.label_input = QLineEdit()
         self.color_btn = QPushButton("选择颜色")
         self.thickness_slider = QSlider(Qt.Horizontal)
         self.thickness_slider.setRange(1, 10)
         self.thickness_slider.setValue(2)
 
-        #props_layout.addRow("标签:", self.label_input)
         props_layout.addRow("颜色:", self.color_btn)
         props_layout.addRow("线宽:", self.thickness_slider)
 
@@ -837,8 +826,6 @@ class BoxAnnotationTool(QMainWindow):
         self.rect_tool_btn.clicked.connect(lambda: self.set_current_tool('rectangle'))
         # 连接颜色选择按钮
         self.color_btn.clicked.connect(self.select_color)
-        # 连接点工具按钮点击事件
-        # self.point_tool_btn.clicked.connect(lambda: self.set_current_tool('point'))
         # 连接鼠标拖动按钮点击事件
         self.mouse_btn.clicked.connect(lambda: self.set_current_tool('mouse'), self.mouse_drag)
 
@@ -934,6 +921,8 @@ class BoxAnnotationTool(QMainWindow):
     # 从本地文件夹加载视频
     def load_video(self):
         """加载视频文件"""
+        # 在加载新视频前清空当前视频信息和变量
+        self.clear_video_resources()
         # 先判断默认输入文件夹是否是图片数据集
         default_input_path = self.config['default_input_path']
         if os.path.exists(default_input_path):
@@ -988,9 +977,11 @@ class BoxAnnotationTool(QMainWindow):
                 'x2': x2,
                 'y2': y2,
                 # 'confidence': confidence,
-                'label': f"猪{i+1}",
+                'label': f"pig{i+1}",
                 'text': '',
-                'color':(0,255,0)                # 自动化标注框默认是绿色
+                'color': (0, 255, 0),  # 自动化标注框默认是绿色
+                # 记录原有颜色
+                'original_color': (0, 255, 0)  # 自动化标注框默认是绿色
             }
             frame_annotation.append(annotation)
         # 保存标注信息
@@ -999,7 +990,7 @@ class BoxAnnotationTool(QMainWindow):
             self.original_annotations[frame_index] = copy.deepcopy(frame_annotation)
             # 初始化当前标注字典，使用深拷贝创建独立副本
             self.annotations[frame_index] = copy.deepcopy(frame_annotation)
-            
+
     # 加载图片数据集功能
     def load_default_atlas(self, files):
         """批量加载文件夹中的图片"""
@@ -1052,20 +1043,20 @@ class BoxAnnotationTool(QMainWindow):
         self.annotations = {}
         try:
             # 打开视频文件
-            cap = cv2.VideoCapture(self.video_path)
-            if not cap.isOpened():
+            self.cap = cv2.VideoCapture(self.video_path)
+            if not self.cap.isOpened():
                 QMessageBox.warning(self, "警告", "无法打开视频文件")
                 return
             # 读取视频信息，直接从视频文件的元数据获取信息，这是一个高效信息
-            self.frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
+            self.frame_rate = int(self.cap.get(cv2.CAP_PROP_FPS))
             # 处理总帧数等于视频总帧数除以间隔并向上取整
             # self.total_frame_count = int(math.ceil(cap.get(cv2.CAP_PROP_FRAME_COUNT)/self.video_frame_selection_interval))
 
-            # 图片帧读取线程
+            # 图片帧读取线程    
             def frame_reader(cap:cv2.VideoCapture):
                 frame_count = 0
+                self.loading = True
                 while cap.isOpened():
-                    self.loading = True
                     ret, frame = cap.read()
                     if not ret:
                         break
@@ -1090,9 +1081,9 @@ class BoxAnnotationTool(QMainWindow):
                 cap.release()
 
             # 1. 先将视频帧转换为图片帧，启动视频帧读取子线程，当视频读取结束后，视频帧读取子线程会结束
-            reader_thread = threading.Thread(target=frame_reader, args=(cap,))
-            reader_thread.daemon = True
-            reader_thread.start()
+            self.reader_thread = threading.Thread(target=frame_reader, args=(self.cap,))
+            self.reader_thread.daemon = True
+            self.reader_thread.start()
 
             # 2. 从视频帧队列中提取帧
             # 2.1 先提取第一帧
@@ -1132,13 +1123,39 @@ class BoxAnnotationTool(QMainWindow):
                 for annotation in self.annotations[self.current_frame_index]:
                     # 绘制矩形
                     color = annotation['color']
+                    thickness = 2
+                    # 如果是当前被选中的标注框，高亮显示
+                    if annotation == self.selected_annotation:
+                        thickness = 3  # 红色
                     cv2.rectangle(frame, (annotation['x1'], annotation['y1']), 
-                                  (annotation['x2'], annotation['y2']), color, 2)
+                                  (annotation['x2'], annotation['y2']), color, thickness)
+                    '''
                     # 绘制标签
                     label_text = f"{annotation['id']}"
                     cv2.putText(frame, label_text, (annotation['x1'], annotation['y1'] - 10), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
+                    '''
+                    # 绘制标签，包含标签和类别信息
+                    class_name = self.classes.get(annotation['class_id'], annotation['class_id'])
+                    # 为了避免OpenCV的中文显示问题，使用英文格式
+                    label_text = f"pig{annotation['id']}: {class_name}"
+                    # 增大字体大小到0.8，调整位置在方框左上角
+                    font_scale = 0.8
+                    font_thickness = 2
+                    # 添加标签背景以提高可读性
+                    (text_width, text_height), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
+                    text_x = annotation['x1']
+                    text_y = annotation['y1'] - 5 if annotation['y1'] > text_height + 10 else annotation['y1'] + text_height + 15
+                    # 绘制背景矩形
+                    cv2.rectangle(frame, (text_x - 3, text_y - text_height - baseline), 
+                                  (text_x + text_width + 3, text_y + 3), (255, 255, 255), -1)
+                    # 绘制边框
+                    cv2.rectangle(frame, (text_x - 3, text_y - text_height - baseline), 
+                                  (text_x + text_width + 3, text_y + 3), color, 1)
+                    # 绘制文本 - OpenCV默认字体不支持中文，所以使用英文
+                    cv2.putText(frame, label_text, (text_x, text_y), 
+                                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), font_thickness)
+                    
             # 绘制正在绘制的矩形
             if self.drawing and self.start_point and self.end_point:
                 cv2.rectangle(frame, (self.start_point.x(), self.start_point.y()),
@@ -1154,7 +1171,7 @@ class BoxAnnotationTool(QMainWindow):
 
             self.video_display.setPixmap(QPixmap.fromImage(scaled_image))
 
-    # 更新当前帧的图片信息（视频名称、总帧数、当前帧数、是否为关键帧、fps）
+    # 更新当前帧的图片信息（视频名称、总帧数、当前帧数、是否为关键帧、fps、当前标注框的类别和标签）
     def update_frame_info(self):
         """更新帧信息显示"""
         self.video_id_value.setText(str(self.video_path.split('/')[-1]).split('.')[0])
@@ -1168,21 +1185,64 @@ class BoxAnnotationTool(QMainWindow):
             self.weight_input.setText(self.annotations[self.current_frame_index][0].get('text', ''))
         else:
             self.weight_input.setText('')
-        # 更新当前图片的类别信息
-        if self.current_frame_index in self.annotations and self.annotations[self.current_frame_index]:
-            # 如果当前帧有标注，获取标注的所有类别(可重复）并以横向布局显示
-            categories = [annotation['class_id'] for annotation in self.annotations[self.current_frame_index]]
+        # 更新当前图片的类别信息列表
+        self.update_category_list()
+    
+    # 更新类别列表
+    def update_category_list(self):
+        # 更新当前图片的类别信息列表
+        if self.current_frame_index in self.annotations:
             # 先将之前的类别标签清除
             while self.category_layout.count() > 0:
                 item = self.category_layout.takeAt(0)
                 widget = item.widget()
                 if widget:
                     widget.deleteLater()
-            # 显示当前帧的所有类别
-            for category in categories:
-                category_label = QLabel(f"{self.classes.get(category, category)}")
-                category_label.setStyleSheet("font-size: 12px; color: #666;")
-                self.category_layout.addWidget(category_label)
+            self.category_labels.clear()
+            # 显示当前帧的所有类别和标签
+            for annotation in self.annotations[self.current_frame_index]:
+                # 获取类别名称，如果没有定义则显示无类别
+                class_name = self.classes.get(annotation['class_id'], '无类别')
+                # 创建显示标注标签和类别的文本
+                label_text = f"{annotation['label']}: {class_name}"
+
+                # 创建水平布局容器
+                h_layout = QHBoxLayout()
+                h_layout.setSpacing(5)
+                h_layout.setContentsMargins(2, 2, 2, 2)
+                
+                # 创建标签控件
+                category_label = QLabel(label_text)
+                # 设置默认样式，增大字体并确保中文正常显示
+                category_label.setStyleSheet("font-size: 14px; color: #666; background-color: transparent; font-family: SimHei, Microsoft YaHei, sans-serif;")
+                # 设置鼠标指针为手型
+                category_label.setCursor(Qt.PointingHandCursor)
+                # 添加点击事件
+                category_label.mousePressEvent = lambda event, annotation=annotation: self.highlight_annotation(annotation)
+
+                # 创建删除按钮（叉号）
+                delete_button = QPushButton("X")
+                delete_button.setFixedSize(20, 20)
+                delete_button.setStyleSheet("font-size: 16px; color: red; background-color: transparent; border: 1px solid #ccc; border-radius: 2px;")
+                delete_button.setCursor(Qt.PointingHandCursor)
+                # 连接删除按钮的点击事件，删除当前类别标签
+                delete_button.clicked.connect(lambda checked,anno=annotation: self.delete_annotation(anno))
+
+                # 将标签和删除按钮添加到水平布局
+                h_layout.addWidget(category_label)
+                h_layout.addWidget(delete_button)
+
+                # 创建一个容器小部件来容纳水平布局
+                container_widget = QWidget()
+                container_widget.setLayout(h_layout)
+
+                # 存储容器控件引用，以标注ID为键
+                self.category_labels[annotation['id']] = container_widget
+
+                # 将容器小部件添加到类别布局中
+                self.category_layout.addWidget(container_widget)
+        # 更新类别标签高亮状态
+        self.update_category_labels_highlight(self.selected_annotation)
         # 如果焦点在体重输入框上，消除输入框的焦点
         if self.weight_input.hasFocus():
             self.weight_input.clearFocus()
@@ -1285,58 +1345,8 @@ class BoxAnnotationTool(QMainWindow):
             QMessageBox.information(self, "成功", f"所有关键帧已保存\nTXT文件目录: {txt_output_dir}\nJSON文件目录: {json_output_dir}")
         except Exception as e:
             QMessageBox.warning(self, "错误", f"保存项目时出错: {e}")
-    
-    '''
-    def open_preferences(self):
-        """打开首选项设置"""
-        # 具体实现代码暂不生成
-        pass
-    def run_model(self):
-        """运行模型处理视频"""
-        # 具体实现代码暂不生成
-        pass
-    def export_annotated_video(self):
-        """导出带有标注的视频帧"""
-        if not self.video_frames:
-            QMessageBox.warning(self, "警告", "请先加载视频")
-            return
-        
-        try:
-            # 获取视频信息
-            height, width, _ = self.video_frames[0].shape
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(self.config['output_video_path'], fourcc, self.frame_rate, (width, height))
 
-            # 逐帧处理
-            for i, frame in enumerate(self.video_frames):
-                # 复制帧
-                annotated_frame = frame.copy()
-                # 绘制标注
-                if i in self.annotations:
-                    for annotation in self.annotations[i]:
-                        color = annotation['color']
-                        # 绘制矩形
-                        cv2.rectangle(annotated_frame, (annotation['x1'], annotation['y1']), 
-                                      (annotation['x2'], annotation['y2']), color, 2)
-                        # 绘制标签
-                        label_text = f"{annotation['id']}. {annotation['label']}"
-                        cv2.putText(annotated_frame, label_text, (annotation['x1'], annotation['y1']-10), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                        # 绘制文本信息
-                        if annotation['text']:
-                            text_text = f"{annotation['text']}"
-                            cv2.putText(annotated_frame, text_text, (annotation['x1'], annotation['y2']+20), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                # 转换为BGR格式并写入视频
-                out.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
-
-            # 释放资源
-            out.release()
-            QMessageBox.information(self, "成功", f"带标注的视频已导出到 {self.config['output_video_path']}")
-        except Exception as e:
-            QMessageBox.warning(self, "错误", f"导出视频时出错: {str(e)}")
-    '''
-
+    # 显示关于对话框（目前直接pass）
     def show_about(self):
         """显示关于对话框"""
         # 具体实现代码暂不生成
@@ -1370,6 +1380,26 @@ class BoxAnnotationTool(QMainWindow):
             # 将体重信息保存到第一个标注中（因为现在每帧只有一个输入框）
             self.annotations[self.current_frame_index][0]['text'] = text
     
+    # 更新类别标签高亮状态
+    def update_category_labels_highlight(self, selected_annotation):
+        """更新类别标签高亮状态"""
+        if not hasattr(self, 'category_labels') or not selected_annotation:
+            return
+    
+        for annotation_id, container_widget in self.category_labels.items():
+            # 获取标签控件（容器中的第一个子部件）
+            if container_widget.layout() and container_widget.layout().count() > 0:
+                label_widget = container_widget.layout().itemAt(0).widget()
+                if isinstance(label_widget, QLabel):
+                    if annotation_id == selected_annotation['id']:
+                        # 高亮显示当前聚焦的标注框标签
+                        label_widget.setStyleSheet("font-size: 14px; color: white; background-color: #4a90e2; font-family: SimHei, Microsoft YaHei, sans-serif;")
+                        container_widget.setStyleSheet("background-color: #4a90e2; padding: 3px 6px; border-radius: 4px;")
+                    else:
+                        # 恢复默认样式
+                        label_widget.setStyleSheet("font-size: 14px; color: #666; background-color: transparent; font-family: SimHei, Microsoft YaHei, sans-serif;")
+                        container_widget.setStyleSheet("background-color: transparent;")
+    
     # 处理键盘事件
     def keyPressEvent(self, event):
         """处理键盘快捷键"""
@@ -1382,6 +1412,12 @@ class BoxAnnotationTool(QMainWindow):
         # 'D'/'d'键切换到下一帧
         elif key == Qt.Key_D or key == Qt.Key_Right:
             self.next_frame()
+        # Delete键删除当前高亮标注框
+        elif key == Qt.Key_Delete:
+            self.delete_annotation()
+        # 'R'/'r'重置当前标注框
+        elif key == Qt.Key_R:
+            self.reset_annotation()
         else:
             # 其他按键调用父类处理
             super().keyPressEvent(event)
@@ -1436,6 +1472,8 @@ class BoxAnnotationTool(QMainWindow):
                     # 确保起始点和结束点不同
                     if self.start_point != self.end_point:
                         self.add_annotation()
+                        # 添加标注后更新右侧窗口的类别显示
+                        self.update_category_list()
                 # 重绘当前帧
                 self.display_current_frame()
                 return True
@@ -1454,8 +1492,11 @@ class BoxAnnotationTool(QMainWindow):
                             self.resizing,self.resize_anchor,self.resizing_annotation = edge_result
                         else:
                             inner_result = self.is_mouse_in_annotation_inner(mapped_point)
+                            # 如果在标注框内部，选定标注框并高亮
                             if inner_result[0]:
                                 self.dragging,self.dragging_annotation,self.drag_offset = inner_result
+                                # 选定标注框并高亮
+                                self.highlight_annotation(self.dragging_annotation)
                                 self.video_display.setCursor(QCursor(Qt.ClosedHandCursor))
                 return True
             # 鼠标移动，拖动标注框
@@ -1540,6 +1581,60 @@ class BoxAnnotationTool(QMainWindow):
             if not input_rect.contains(click_pos):
                 # 清除输入框的焦点
                 self.weight_input.clearFocus()
+
+    # 添加closeEvent方法
+    def closeEvent(self, event):
+        """重写窗口关闭事件，清理资源和终止线程"""
+        self.clear_video_resources()
+        # 接受关闭事件
+        event.accept()
+        # 调用父类的关闭事件处理
+        super().closeEvent(event)
+    
+    # 清空视频资源和相关变量
+    def clear_video_resources(self):
+        """清空视频资源和相关变量"""
+        # 清理线程资源
+        if hasattr(self, 'reader_thread') and self.reader_thread.is_alive():
+            if hasattr(self, 'cap') and self.cap.isOpened():
+                self.cap.release()
+            self.reader_thread.join(timeout=1.0)
+        
+        # 清空视频相关变量
+        self.video_frames = []
+        self.video_path = ""
+        self.video_type = False
+        self.current_frame_index = 0
+        self.total_frame_count = 0
+        self.frame_rate = 30  # 重置为默认值
+        self.key_frames = {}
+        
+        # 清空队列
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except:
+                pass
+        
+        # 清空标注相关变量
+        self.original_annotations = {}
+        self.annotations = {}
+        
+        # 重置绘制和拖动状态
+        self.drawing = False
+        self.start_point = None
+        self.end_point = None
+        self.current_color = QColor(Qt.green)  # 重置为默认颜色
+        self.current_thickness = 2  # 重置为默认线宽
+        self.dragging = False
+        self.dragging_annotation = None
+        self.drag_offset = QPoint()
+        
+        # 更新界面状态
+        self.loading = False
+        self.video_id_value.setText("")
+        self.video_display.setText("视频显示区域")  # 重置显示区域文本
+        self.statusBar().showMessage("就绪")
 
     # 将显示窗口的坐标映射到原始视频帧的坐标
     def map_to_original_frame(self, point):
@@ -1705,10 +1800,23 @@ class BoxAnnotationTool(QMainWindow):
         y2 = max(self.start_point.y(), self.end_point.y())
 
         # 设置标注框的标签
-        label = f"猪{annotation_id}"
+        label = f"pig{annotation_id}"
 
-        # 根据标注框的颜色获取标注类别
-        if self.current_color == Qt.green:
+         # 弹出对话框选择猪的类别
+        class_items = [f"{class_id}: {class_name}" for class_id, class_name in self.classes.items()]
+        if class_items:
+            selected_class, ok = QInputDialog.getItem(
+                self, "选择猪的类别", "请选择猪的类别:", 
+                class_items, 0, False
+            )
+            if ok and selected_class:
+                # 解析选择的类别ID
+                class_id = int(selected_class.split(':')[0])
+            else:
+                # 如果用户取消选择，使用默认类别
+                class_id = 0
+        else:
+            # 如果没有类别数据，使用默认类别
             class_id = 0
 
         # 存储标注信息
@@ -1723,15 +1831,43 @@ class BoxAnnotationTool(QMainWindow):
             'label': label,
             'class_id': class_id,
             'text': '',
-            'color': (self.current_color.red(), self.current_color.green(), self.current_color.blue())
+            # 标注框的颜色，将self.current_color转换为RGB元组
+            'color': (self.current_color.red(), self.current_color.green(), self.current_color.blue()),  # 默认是绿色
+            # 记录原有颜色
+            'original_color': (self.current_color.red(), self.current_color.green(), self.current_color.blue())  # 默认是绿色
         })
+    
+    # 删除标注框
+    def delete_annotation(self,annotation=None):
+        # 判断是否有选中的标注框
+        if not self.selected_annotation:
+            return
+        # 如果传入了具体的标注框，则判断是否是选中标注框
+        if annotation and annotation != self.selected_annotation:
+            return
+        # 从当前帧的标注列表中移除选中的标注框
+        self.annotations[self.current_frame_index].remove(self.selected_annotation)
+        # 清除选中的标注框
+        self.selected_annotation = None
+        # 刷新当前帧的显示
+        self.display_current_frame()
+        # 更新类别标签的高亮显示
+        self.update_category_list()
 
-        # 如果当前帧是关键帧，添加输入框（当前不需要）
-        '''
-        if self.key_frames.get(self.current_frame_index, False):
-            self.add_annotation_widget(annotation_id, label)
-        '''
-
+    # 高亮显示标注框
+    def highlight_annotation(self,annotation):
+        """高亮显示标注框"""
+        if not annotation:
+            return
+        # 清除之前的高亮，恢复成原来的颜色
+        if self.selected_annotation:
+            self.selected_annotation['color'] = self.selected_annotation['original_color']  # 恢复原有颜色
+        # 高亮当前标注框
+        annotation['color'] = (255, 0, 0)  # 红色
+        self.selected_annotation = annotation
+        self.display_current_frame()
+        self.update_category_labels_highlight(self.selected_annotation)
+    
     '''
     # 添加标注框的文本输入框（当前不需要）
     def add_annotation_widget(self, annotation_id, label):
@@ -1919,8 +2055,12 @@ class BoxAnnotationTool(QMainWindow):
         if self.current_frame_index in self.annotations and self.current_frame_index in self.original_annotations:
             # 将当前帧的标注信息恢复到原始标注字典（作为备份），使用深拷贝创建独立副本
             self.annotations[self.current_frame_index] = copy.deepcopy(self.original_annotations[self.current_frame_index])
+            # 清除当前选中的标注框
+            self.selected_annotation = None
             # 更新当前帧的图片信息
             self.display_current_frame()
+            # 更新当前帧的标注信息
+            self.update_category_list()
         else:
             return
 
@@ -1932,6 +2072,10 @@ class BoxAnnotationTool(QMainWindow):
             # 检查是否已到达第一帧
             if self.current_frame_index > 0:
                 self.current_frame_index -= 1
+                # 清除之前的高亮，让self.selected_annotation指向一个空对象
+                if self.selected_annotation:
+                    self.selected_annotation['color'] = self.selected_annotation['original_color']  # 恢复原有颜色
+                    self.selected_annotation = None
                 self.display_current_frame()
                 self.update_frame_info()
             else:
@@ -1966,6 +2110,10 @@ class BoxAnnotationTool(QMainWindow):
                     frame = self.frame_queue.get()
                     self.video_frames.append(frame)
                 self.current_frame_index += 1
+                # 清除之前的高亮
+                if self.selected_annotation:
+                    self.selected_annotation['color'] = self.selected_annotation['original_color']  # 恢复原有颜色
+                    self.selected_annotation = None
                 self.display_current_frame()
                 self.update_frame_info()
         finally:
@@ -1997,6 +2145,10 @@ class BoxAnnotationTool(QMainWindow):
             # 更新帧索引并显示
             if new_index != self.current_frame_index:
                 self.current_frame_index = new_index
+                # 清除之前的高亮
+                if self.selected_annotation:
+                    self.selected_annotation['color'] = self.selected_annotation['original_color']  # 恢复原有颜色
+                    self.selected_annotation = None
                 self.display_current_frame()
                 self.update_frame_info()
         else:
@@ -2058,6 +2210,10 @@ class BoxAnnotationTool(QMainWindow):
                 
                 # 更新索引并显示帧
                 self.current_frame_index = min(new_index, len(self.video_frames) - 1)
+                # 清除之前的高亮
+                if self.selected_annotation:
+                    self.selected_annotation['color'] = self.selected_annotation['original_color']  # 恢复原有颜色
+                    self.selected_annotation = None
                 self.display_current_frame()
                 self.update_frame_info()
         finally:

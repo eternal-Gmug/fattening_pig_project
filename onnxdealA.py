@@ -97,7 +97,7 @@ def main(onnx_model, image, classes_txt, input_size=1280):
         print(f"[WARN] 模型输出格式不符合预期: {preds.shape}")
         return None
 
-'''
+
 if __name__ == "__main__":
 
     onnx_model = "model/pig_gesture_best.onnx"
@@ -105,5 +105,3 @@ if __name__ == "__main__":
     classes_txt = "model/classes.txt"
 
     main(onnx_model, image_path, classes_txt)
-
-'''
