@@ -589,6 +589,8 @@ class BoxAnnotationTool(QMainWindow):
         self.dragging = False          # 是否正在拖动标注
         self.dragging_annotation = None # 当前正在拖动的标注
         self.drag_offset = QPoint()    # 拖动偏移量
+        # 文件保存相关变量
+        self.saving_timestamp = None   # 记录当前项目第一次保存的时间戳
         # 标注框扩缩相关变量
         self.resizing = False          # 是否正在调整标注框大小
         self.resize_anchor = None      # 调整大小的锚点位置('n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw')
@@ -1789,7 +1791,7 @@ class BoxAnnotationTool(QMainWindow):
         
         # 计算当前帧的最大标注id,从1开始递增
         max_id = 0
-        if self.current_frame_index in self.annotations:
+        if self.current_frame_index in self.annotations and self.annotations[self.current_frame_index]:
             max_id = max([anno['id'] for anno in self.annotations[self.current_frame_index]])
         annotation_id = max_id + 1
 
