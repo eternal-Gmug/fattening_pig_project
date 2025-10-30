@@ -994,7 +994,7 @@ class BoxAnnotationTool(QMainWindow):
             self.annotations[frame_index] = copy.deepcopy(frame_annotation)
 
     # 加载图片数据集功能
-    def load_default_atlas(self, files):
+    def load_default_atlas(self, files, montage=True):
         """批量加载文件夹中的图片"""
         try:
             # 清空之前的帧数据
@@ -1004,7 +1004,10 @@ class BoxAnnotationTool(QMainWindow):
             
             # 加载所有图片
             for file in files:
-                file_path = os.path.join(self.video_path, file)
+                if not montage:
+                    file_path = self.video_path
+                else:
+                    file_path = os.path.join(self.video_path, file)
                 frame = cv2.imread(file_path)
                 if frame is not None:
                     # 转换为RGB格式
@@ -1044,6 +1047,16 @@ class BoxAnnotationTool(QMainWindow):
         self.original_annotations = {}
         self.annotations = {}
         try:
+            # 图像格式
+            image_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif']
+            # 查看self.video_path路径最后一个文件的后缀
+            file_name = str(self.video_path.split('/')[-1])
+            _, file_extension = os.path.splitext(file_name)
+            # 如果文件是图像类型的
+            if file_extension in image_extensions:
+                self.load_default_atlas([file_name], False)
+                return
+
             # 打开视频文件
             self.cap = cv2.VideoCapture(self.video_path)
             if not self.cap.isOpened():
@@ -1193,14 +1206,14 @@ class BoxAnnotationTool(QMainWindow):
     # 更新类别列表
     def update_category_list(self):
         # 更新当前图片的类别信息列表
+        # 先将之前的类别标签清除
+        while self.category_layout.count() > 0:
+            item = self.category_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.category_labels.clear()
         if self.current_frame_index in self.annotations:
-            # 先将之前的类别标签清除
-            while self.category_layout.count() > 0:
-                item = self.category_layout.takeAt(0)
-                widget = item.widget()
-                if widget:
-                    widget.deleteLater()
-            self.category_labels.clear()
             # 显示当前帧的所有类别和标签
             for annotation in self.annotations[self.current_frame_index]:
                 # 获取类别名称，如果没有定义则显示无类别
@@ -1618,6 +1631,14 @@ class BoxAnnotationTool(QMainWindow):
             except:
                 pass
         
+        # 清空标注框类别列表
+        while self.category_layout.count() > 0:
+            item = self.category_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.category_labels.clear()
+        
         # 清空标注相关变量
         self.original_annotations = {}
         self.annotations = {}
@@ -1631,6 +1652,9 @@ class BoxAnnotationTool(QMainWindow):
         self.dragging = False
         self.dragging_annotation = None
         self.drag_offset = QPoint()
+        
+        # 清空选定标注框信息
+        self.selected_annotation = None
         
         # 更新界面状态
         self.loading = False

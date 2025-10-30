@@ -1,11 +1,15 @@
-# 项目依赖库
+# 项目依赖库 - 必需
 opencv-python>=4.5.0
 numpy>=1.20.0
 onnxruntime>=1.9.0
 PySide6>=6.0.0
+ultralytics>=8.0.0  # YOLOv8库，从test.py中发现使用
 
-# 可选依赖（根据项目可能需要的额外功能）
-# 如果项目后续需要使用PyTorch或YOLO模型训练，可以添加以下依赖
-# torch>=1.9.0
-# torchvision>=0.10.0
-# ultralytics>=8.0.0  # YOLOv8库
+# 开发和打包依赖
+pyinstaller>=5.0.0  # 用于打包应用程序
+
+# 可选依赖（用于扩展功能）
+# torch>=1.9.0  # 如果需要模型训练或微调
+# torchvision>=0.10.0  # PyTorch的计算机视觉库
+# matplotlib>=3.4.0  # 如果需要可视化功能
+# pillow>=8.0.0  # 图像处理增强
