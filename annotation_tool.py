@@ -929,13 +929,22 @@ class BoxAnnotationTool(QMainWindow):
         default_input_path = self.config['default_input_path']
         if os.path.exists(default_input_path):
             files = os.listdir(default_input_path)
-            # 文件必须存在且全部都是图片文件才能加载
-            if files and all(file.endswith(('.jpg', '.jpeg', '.png')) for file in files):
-                # 全部是图片文件，直接加载
-                self.video_path = default_input_path
-                self.video_id_value.setText(str(self.video_path.split('/')[-1]))
-                self.load_default_atlas(files)
-                return
+            # 修改后：只要存在图片文件就询问用户是否加载
+            image_files = [file for file in files if file.endswith(('.jpg', '.jpeg', '.png'))]
+            if image_files:
+                reply = QMessageBox.question(
+                    self, 
+                    '加载图片集', 
+                    f'在默认输入文件夹中发现 {len(image_files)} 个图片文件，是否加载图片集？',
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    self.video_path = default_input_path
+                    self.video_id_value.setText(str(self.video_path.split('/')[-1]))
+                    self.load_default_atlas(image_files)
+                    return
+        
         # 如果默认输入文件夹没有图片文件，从本地文件夹加载视频
         file_path, _ = QFileDialog.getOpenFileName(
             self, "选择视频或图片文件", "", "Media Files (*.mp4 *.avi *.mov *.jpg *.jpeg *.png *.bmp);;All Files (*)"
@@ -1000,37 +1009,54 @@ class BoxAnnotationTool(QMainWindow):
             # 清空之前的帧数据
             self.video_frames = []
             self.current_frame_index = 0
+            self.original_annotations = {}
             self.annotations = {}
             
-            # 加载所有图片
-            for file in files:
-                if not montage:
-                    file_path = self.video_path
-                else:
-                    file_path = os.path.join(self.video_path, file)
-                frame = cv2.imread(file_path)
-                if frame is not None:
-                    # 转换为RGB格式
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    self.video_frames.append(frame)
-                else:
-                    print(f"无法加载图片: {file}")
-            
             # 更新视频信息
-            self.total_frame_count = len(self.video_frames)
             self.frame_rate = 1  # 图片序列的帧率设为1
 
-            # 判断是否有指定的模型
-            if self.config['model_path'] is not None:
-                for frame_index,frame in enumerate(self.video_frames):
-                    result = self.Extract_the_annotation_information(frame)
-                    self.Save_model_recognition_annotations(result, frame_index)
+            # 图片帧读取线程加载所有图片
+            def frame_reader():
+                self.loading = True
+                for frame_index,file in enumerate(files):
+                    if not montage:
+                        file_path = self.video_path
+                    else:
+                        file_path = os.path.join(self.video_path, file)
+                    frame = cv2.imread(file_path)
+                    if frame is not None:
+                        # 转换为RGB格式
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        if self.config['model_path'] is not None:
+                            result = self.Extract_the_annotation_information(frame)
+                            self.Save_model_recognition_annotations(result, frame_index)
+                        self.frame_queue.put(frame)
+                        self.total_frame_count += 1
+                    else:
+                        print(f"无法加载图片: {file}")
+                    # 实时更新界面显示
+                    self.frame_num_value.setText(f"{self.current_frame_index + 1}/{self.total_frame_count} (加载中...)")
+                # 视频帧读取完毕后，放入None作为结束信号
+                self.frame_queue.put(None)
+                self.loading = False
+                # 通知主线程更新界面（加载完成）
+                self.frame_num_value.setText(f"{self.current_frame_index + 1}/{self.total_frame_count}")
             
+            # 1. 先将视频帧转换为图片帧，启动视频帧读取子线程，当视频读取结束后，视频帧读取子线程会结束
+            self.reader_thread = threading.Thread(target=frame_reader)
+            self.reader_thread.daemon = True
+            self.reader_thread.start()
+
+            # 2. 从视频帧队列中提取帧
+            # 2.1 先提取第一帧
+            frame = self.frame_queue.get()
+            self.video_frames.append(frame)
+
             # 更新界面显示
             if self.video_frames:
                 self.display_current_frame()
                 self.update_frame_info()
-                QMessageBox.information(self, "加载完成", f"成功加载 {len(self.video_frames)} 张图片")
+                QMessageBox.information(self, "检测成功", "图片检测已开始，结果已暂存。")
             else:
                 QMessageBox.warning(self, "警告", "未加载到任何图片")
             
@@ -1110,11 +1136,7 @@ class BoxAnnotationTool(QMainWindow):
                 self.display_current_frame()
                 self.update_frame_info()
                 # 如果有模型检测结果，显示提示
-                if self.annotations:
-                    # detected_count = sum(len(anns) for anns in self.annotations.values())
-                    # QMessageBox.information(self, "检测结果", f"检测到 {detected_count} 只猪")
-                    # 输出检测完成
-                    QMessageBox.information(self, "检测成功", "视频检测已完成，结果已暂存。")
+                QMessageBox.information(self, "检测成功", "视频检测已开始，结果已暂存。")
             else:
                 QMessageBox.warning(self, "警告", "视频中未提取到帧")
 
@@ -1187,7 +1209,7 @@ class BoxAnnotationTool(QMainWindow):
             self.video_display.setPixmap(QPixmap.fromImage(scaled_image))
 
     # 更新当前帧的图片信息（视频名称、总帧数、当前帧数、是否为关键帧、fps、当前标注框的类别和标签）
-    def update_frame_info(self):
+    def update_frame_info(self):  
         """更新帧信息显示"""
         self.video_id_value.setText(str(self.video_path.split('/')[-1]).split('.')[0])
         if self.loading:
@@ -2132,7 +2154,7 @@ class BoxAnnotationTool(QMainWindow):
             # 如果当前帧的索引号小于self.total_frame_count的长度减一，说明下一帧已经处理，可以使用
             if self.current_frame_index < self.total_frame_count - 1:
                 # 如果当前帧的索引号大于等于self.video_frames的长度减1，说明下一帧还没有持久化进self.video_frames，需要从视频帧队列中拉取新的帧信息
-                if self.video_type and self.current_frame_index >= len(self.video_frames) - 1:
+                if self.current_frame_index >= len(self.video_frames) - 1:
                     frame = self.frame_queue.get()
                     self.video_frames.append(frame)
                 self.current_frame_index += 1
@@ -2222,7 +2244,7 @@ class BoxAnnotationTool(QMainWindow):
             # 更新帧索引并显示
             if new_index != self.current_frame_index:
                 # 如果视频帧还没有加载到目标帧，需要确保从队列中加载足够的帧
-                if self.video_type and new_index >= len(self.video_frames):
+                if new_index >= len(self.video_frames):
                     # 需要加载的帧数
                     needed_frames = new_index - len(self.video_frames) + 1
                     # 从队列中加载帧
