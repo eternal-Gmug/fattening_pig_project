@@ -10,7 +10,8 @@ import math
 import onnxdealA
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QPushButton, QLabel, QMessageBox, QFrame, QFileDialog, QSlider, QGroupBox, QFormLayout,
-                              QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QSizePolicy,QStyle,QInputDialog)
+                              QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QSizePolicy, QStyle,
+                              QInputDialog, QScrollArea, QListWidget, QListWidgetItem, QAbstractItemView)
 from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, QRect,QSize
 from PySide6.QtGui import QFont, QPixmap, QCursor, QColor, QImage
 
@@ -605,8 +606,8 @@ class BoxAnnotationTool(QMainWindow):
             'output_txt_path': './output',
             'output_video_path': './processed_videos',
             'background_color': '#f0f0f0',
-            'model_path': './model/pig_gesture_best.onnx',
-            'classes_path': './model/classes.txt'
+            'model_path': './model/1109_big_area_best.onnx',
+            'classes_path': './attachment/classes.txt'
         }
 
         # 初始化类别字典
@@ -747,7 +748,7 @@ class BoxAnnotationTool(QMainWindow):
         left_layout.addWidget(info_group)
 
         # 视频显示区域
-        #TODO: 视频显示区域在界面可缩放时保持原视频比例
+        # TODO: 视频显示区域在界面可缩放时保持原视频比例
         self.video_display = QLabel("视频显示区域")
         # 居中文本
         self.video_display.setAlignment(Qt.AlignCenter)
@@ -802,9 +803,27 @@ class BoxAnnotationTool(QMainWindow):
 
         # 添加识别到的类型信息
         self.current_category_group = QGroupBox("当前类别")
-        self.category_layout = QVBoxLayout()      # 创建一个垂直布局管理器
-        self.current_category_group.setLayout(self.category_layout)     # 定义了该分组框内控件的布局规则
-        annotation_layout.addWidget(self.current_category_group)        
+        # 创建滚动区域
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)  # 确保滚动区域内的窗口部件可以调整大小
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 禁用水平滚动条
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)    # 根据需要显示垂直滚动条
+        self.scroll_area.setMinimumHeight(150)    # 设置最小高度
+        # 创建滚动区域的内容窗口部件
+        # 使用QListWidget替代QVBoxLayout，实现高效的列表项管理
+        self.category_list = QListWidget()
+        self.category_list.setSpacing(5)
+        # 设置列表项的样式
+        self.category_list.setStyleSheet("QListWidget { border: none; } ")
+        # 禁用列表的默认选择行为，因为我们有自己的高亮逻辑
+        self.category_list.setSelectionMode(QAbstractItemView.NoSelection)
+        # 将列表添加到滚动区域
+        self.scroll_area.setWidget(self.category_list)
+        # 将滚动区域添加到分组框
+        self.current_category_group.setLayout(QVBoxLayout())
+        self.current_category_group.layout().addWidget(self.scroll_area)
+        # 将分组框添加到标注布局
+        annotation_layout.addWidget(self.current_category_group)
         
         #添加重置该标签、上一帧、下一帧的按钮组
         control_group = QGroupBox("控制")
@@ -1208,7 +1227,7 @@ class BoxAnnotationTool(QMainWindow):
 
             self.video_display.setPixmap(QPixmap.fromImage(scaled_image))
 
-    # 更新当前帧的图片信息（视频名称、总帧数、当前帧数、是否为关键帧、fps、当前标注框的类别和标签）
+    # 更新当前帧的图片信息（视频名称、总帧数、当前帧数、是否为关键帧、fps、当前标注框的类别和标签），同时更新右侧的类别标签
     def update_frame_info(self):  
         """更新帧信息显示"""
         self.video_id_value.setText(str(self.video_path.split('/')[-1]).split('.')[0])
@@ -1225,59 +1244,75 @@ class BoxAnnotationTool(QMainWindow):
         # 更新当前图片的类别信息列表
         self.update_category_list()
     
-    # 更新类别列表
-    def update_category_list(self):
-        # 更新当前图片的类别信息列表
-        # 先将之前的类别标签清除
-        while self.category_layout.count() > 0:
-            item = self.category_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-        self.category_labels.clear()
-        if self.current_frame_index in self.annotations:
+    # 绘制列表项
+    def draw_category_item(self, annotation):
+        # 提取类别信息
+        class_name = self.classes.get(annotation['class_id'], annotation['class_id'])
+        # 为了避免OpenCV的中文显示问题，使用英文格式
+        label_text = f"pig{annotation['id']}: {class_name}"
+        # 创建列表项
+        item = QListWidgetItem()
+        # 创建自定义widget用于列表项
+        container_widget = QWidget()
+        h_layout = QHBoxLayout(container_widget)
+        h_layout.setSpacing(5)
+        h_layout.setContentsMargins(2, 2, 2, 2)
+                
+        # 创建标签控件
+        category_label = QLabel(label_text)
+        # 设置默认样式，增大字体并确保中文正常显示
+        category_label.setStyleSheet("font-size: 14px; color: #666; background-color: transparent; font-family: SimHei, Microsoft YaHei, sans-serif;")
+        # 设置鼠标指针为手型
+        category_label.setCursor(Qt.PointingHandCursor)
+        # 添加点击事件
+        category_label.mousePressEvent = lambda event, annotation=annotation: self.highlight_annotation(annotation)
+
+        # 创建删除按钮（叉号）
+        delete_button = QPushButton("X")
+        delete_button.setFixedSize(20, 20)
+        delete_button.setStyleSheet("font-size: 16px; color: red; background-color: transparent; border: 1px solid #ccc; border-radius: 2px;")
+        delete_button.setCursor(Qt.PointingHandCursor)
+        # 连接删除按钮的点击事件，删除当前类别标签
+        delete_button.clicked.connect(lambda checked,anno=annotation: self.delete_annotation(anno))
+
+        # 将标签和删除按钮添加到水平布局
+        h_layout.addWidget(category_label)
+        h_layout.addWidget(delete_button)
+
+        # 设置列表项的高度
+        item.setSizeHint(container_widget.sizeHint())
+
+        # 将自定义widget设置为列表项的widget
+        self.category_list.addItem(item)
+        self.category_list.setItemWidget(item, container_widget)
+
+        return item
+
+    # 更新类别列表，mode=0表示切换帧需要更新全部列表，mode=1表示新增标注框仅绘制新增的标签组件
+    def update_category_list(self, mode = 0):
+        # 需要更新全部列表时才清空列表但保留布局
+        if mode == 0:
+            self.category_list.clear()
+            self.category_labels.clear()
+
+        if self.current_frame_index not in self.annotations:
+            return
+        
+        # 如果当前模式为1，仅绘制新增的标签组件
+        if mode == 1:
+            new_annotation = self.annotations[self.current_frame_index][-1]
+            # 绘制列表项
+            item = self.draw_category_item(new_annotation)
+            # 存储列表项引用，以标注ID为键
+            self.category_labels[new_annotation['id']] = item
+        else:
             # 显示当前帧的所有类别和标签
             for annotation in self.annotations[self.current_frame_index]:
-                # 获取类别名称，如果没有定义则显示无类别
-                class_name = self.classes.get(annotation['class_id'], '无类别')
-                # 创建显示标注标签和类别的文本
-                label_text = f"{annotation['label']}: {class_name}"
-
-                # 创建水平布局容器
-                h_layout = QHBoxLayout()
-                h_layout.setSpacing(5)
-                h_layout.setContentsMargins(2, 2, 2, 2)
-                
-                # 创建标签控件
-                category_label = QLabel(label_text)
-                # 设置默认样式，增大字体并确保中文正常显示
-                category_label.setStyleSheet("font-size: 14px; color: #666; background-color: transparent; font-family: SimHei, Microsoft YaHei, sans-serif;")
-                # 设置鼠标指针为手型
-                category_label.setCursor(Qt.PointingHandCursor)
-                # 添加点击事件
-                category_label.mousePressEvent = lambda event, annotation=annotation: self.highlight_annotation(annotation)
-
-                # 创建删除按钮（叉号）
-                delete_button = QPushButton("X")
-                delete_button.setFixedSize(20, 20)
-                delete_button.setStyleSheet("font-size: 16px; color: red; background-color: transparent; border: 1px solid #ccc; border-radius: 2px;")
-                delete_button.setCursor(Qt.PointingHandCursor)
-                # 连接删除按钮的点击事件，删除当前类别标签
-                delete_button.clicked.connect(lambda checked,anno=annotation: self.delete_annotation(anno))
-
-                # 将标签和删除按钮添加到水平布局
-                h_layout.addWidget(category_label)
-                h_layout.addWidget(delete_button)
-
-                # 创建一个容器小部件来容纳水平布局
-                container_widget = QWidget()
-                container_widget.setLayout(h_layout)
-
-                # 存储容器控件引用，以标注ID为键
-                self.category_labels[annotation['id']] = container_widget
-
-                # 将容器小部件添加到类别布局中
-                self.category_layout.addWidget(container_widget)
+                # 绘制列表项
+                item = self.draw_category_item(annotation)
+                # 存储列表项引用，以标注ID为键
+                self.category_labels[annotation['id']] = item
+        
         # 更新类别标签高亮状态
         self.update_category_labels_highlight(self.selected_annotation)
         # 如果焦点在体重输入框上，消除输入框的焦点
@@ -1420,11 +1455,12 @@ class BoxAnnotationTool(QMainWindow):
     # 更新类别标签高亮状态
     def update_category_labels_highlight(self, selected_annotation):
         """更新类别标签高亮状态"""
-        if not hasattr(self, 'category_labels') or not selected_annotation:
+        if not hasattr(self, 'category_labels') or not hasattr(self, 'category_list') or not selected_annotation:
             return
     
-        for annotation_id, container_widget in self.category_labels.items():
-            # 获取标签控件（容器中的第一个子部件）
+        for annotation_id, item in self.category_labels.items():
+            # 获取对应的列表项widget
+            container_widget = self.category_list.itemWidget(item)
             if container_widget.layout() and container_widget.layout().count() > 0:
                 label_widget = container_widget.layout().itemAt(0).widget()
                 if isinstance(label_widget, QLabel):
@@ -1510,7 +1546,7 @@ class BoxAnnotationTool(QMainWindow):
                     if self.start_point != self.end_point:
                         self.add_annotation()
                         # 添加标注后更新右侧窗口的类别显示
-                        self.update_category_list()
+                        self.update_category_list(1)
                 # 重绘当前帧
                 self.display_current_frame()
                 return True
@@ -1654,11 +1690,7 @@ class BoxAnnotationTool(QMainWindow):
                 pass
         
         # 清空标注框类别列表
-        while self.category_layout.count() > 0:
-            item = self.category_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
+        self.category_list.clear()
         self.category_labels.clear()
         
         # 清空标注相关变量
@@ -1895,12 +1927,25 @@ class BoxAnnotationTool(QMainWindow):
             return
         # 从当前帧的标注列表中移除选中的标注框
         self.annotations[self.current_frame_index].remove(self.selected_annotation)
+
+        # 使用QListWidget的removeItemWidget方法删除对应的列表项，而不是重新渲染整个列表
+        if self.selected_annotation['id'] in self.category_labels:
+            item = self.category_labels[self.selected_annotation['id']]
+            # 获取项的行号
+            row = self.category_list.row(item)
+            if row >= 0:
+                # 移除列表项
+                self.category_list.takeItem(row)
+                # 从字典中移除引用
+                del self.category_labels[self.selected_annotation['id']]
+        
         # 清除选中的标注框
         self.selected_annotation = None
         # 刷新当前帧的显示
         self.display_current_frame()
-        # 更新类别标签的高亮显示
-        self.update_category_list()
+        # 如果当前有选中的标注框，更新高亮显示
+        if self.selected_annotation:
+            self.update_category_labels_highlight(self.selected_annotation)
 
     # 高亮显示标注框
     def highlight_annotation(self,annotation):
@@ -2279,8 +2324,6 @@ class BoxAnnotationTool(QMainWindow):
             self.config['default_input_path'] = directory_path
             self.video_path_input.setText(directory_path)
             self.video_path = directory_path
-            self.video_id_value.setText(os.path.basename(directory_path))
-            self.load_default_atlas()
 
     # 浏览并选择输出目录文件夹
     def browse_output_directory(self):

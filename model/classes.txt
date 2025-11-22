@@ -1,3 +1,0 @@
-pig_back
-pig_side
-pig_lying
