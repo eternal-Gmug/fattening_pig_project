@@ -11,7 +11,7 @@ import onnxdealA
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                               QPushButton, QLabel, QMessageBox, QFrame, QFileDialog, QSlider, QGroupBox, QFormLayout,
                               QLineEdit, QComboBox, QColorDialog, QTabWidget, QSplitter, QCheckBox, QSizePolicy, QStyle,
-                              QInputDialog, QScrollArea, QListWidget, QListWidgetItem, QAbstractItemView)
+                              QInputDialog, QScrollArea, QListWidget, QListWidgetItem, QAbstractItemView, QButtonGroup, QRadioButton)
 from PySide6.QtCore import Qt, QTimer, QEvent, QPoint, QRect,QSize
 from PySide6.QtGui import QFont, QPixmap, QCursor, QColor, QImage
 
@@ -559,6 +559,7 @@ class SelectionWindow(QMainWindow):
 
 # 方框标注工具
 class BoxAnnotationTool(QMainWindow):
+    # 全类初始化
     def __init__(self):
         super().__init__()
         self.setWindowTitle("方框标注")
@@ -612,6 +613,9 @@ class BoxAnnotationTool(QMainWindow):
 
         # 初始化类别字典
         self.classes = self.init_classes()
+        # 模型相关变量
+        self.model_pair = self.init_model_pair()
+        self.selected_model_name = None
 
         # 创建主部件和布局
         self.central_widget = QWidget()
@@ -628,6 +632,40 @@ class BoxAnnotationTool(QMainWindow):
         self.create_main_content()
         # 创建状态栏
         self.statusBar().showMessage("就绪")
+    
+    # 初始化类别字典
+    def init_classes(self):
+        """ 初始化类别字典 """
+        classes = {}
+        # 检查类别文件是否存在
+        if self.config['classes_path'] is None or not os.path.exists(self.config['classes_path']):
+            QMessageBox.warning(self, "类别文件错误", "请先配置正确的类别文件路径。")
+            self.close()  # 直接关闭窗口
+            return None
+        # 提取类别文件中的文件
+        with open(self.config['classes_path'], 'r') as f:
+            for i,line in enumerate(f):
+                line = line.strip()
+                if line:
+                    cls_name = line.split()[0]
+                    classes[i] = cls_name
+        return classes
+    
+    # 初始化模型名称路径字典
+    def init_model_pair(self):
+        """初始化模型名称路径字典"""
+        model_pair = {}
+        # 提取model文件夹中的所有onnx模型文件
+        if not os.path.exists('./model'):
+            print("模型文件夹不存在")
+            return model_pair
+        
+        model_files = [f for f in os.listdir('./model') if f.endswith('.onnx')]
+        for model_file in model_files:
+            model_name = model_file.split('.')[0]
+            model_path = os.path.join('./model', model_file)
+            model_pair[model_name] = model_path
+        return model_pair
 
     def set_style(self):
         """设置应用程序样式"""
@@ -684,7 +722,6 @@ class BoxAnnotationTool(QMainWindow):
 
         # 添加视频信息显示区域
         info_group = QGroupBox("视频信息")
-
         info_layout = QVBoxLayout(info_group)
         info_layout.setSpacing(8)
         info_layout.setContentsMargins(10, 10, 10, 10)
@@ -883,6 +920,104 @@ class BoxAnnotationTool(QMainWindow):
         annotation_layout.addStretch()
         right_panel.addTab(annotation_tab, "标注")
 
+        # 模型设置标签页
+        model_tab = QWidget()
+        model_layout = QVBoxLayout(model_tab)
+
+        model_group = QGroupBox("模型选择")
+        model_form_layout = QFormLayout()
+        
+        # 创建模型选择的滚动区域
+        model_scroll_area = QScrollArea()
+        model_scroll_area.setWidgetResizable(True)
+        model_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        model_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        model_scroll_area.setMinimumHeight(150)
+        
+        # 创建滚动区域的内容窗口
+        scroll_content = QWidget()
+        self.model_radio_layout = QVBoxLayout(scroll_content)
+        self.model_radio_layout.setSpacing(5)
+        self.model_radio_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # 创建单选按钮组
+        self.model_radio_group = QButtonGroup()
+
+        # 遍历model_pair，为每个模型创建单选按钮
+        current_model_path = self.config['model_path']
+
+        # 找出当前配置对应的模型名称
+        for model_name, model_path in self.model_pair.items():
+            # 如果模型路径与当前配置的模型路径一致，不是内存位置相同
+            if os.path.normpath(model_path) == os.path.normpath(current_model_path):
+                self.selected_model_name = model_name
+                break
+        
+        # 如果当前模型名称依旧为None，说明配置文件中的默认模型路径不存在
+        if self.selected_model_name is None and len(self.model_pair.values()) > 0:
+            self.selected_model_name = list(self.model_pair.keys())[0]
+            current_model_path = self.model_pair[self.selected_model_name]
+            self.config['model_path'] = current_model_path
+        
+        # 检查是否有可用模型
+        if len(self.model_pair.values()) == 0:
+            # 如果没有可用模型，添加提示信息
+            no_model_label = QLabel("此时暂无模型可用")
+            no_model_label.setStyleSheet("color: #666; font-style: italic;")
+            self.model_radio_layout.addWidget(no_model_label)
+            
+            # 将内容窗口添加到滚动区域
+            model_scroll_area.setWidget(scroll_content)
+            
+            # 只添加可用模型行，不显示当前模型路径
+            model_form_layout.addRow("可用模型:", model_scroll_area)
+        else:
+            # 创建单选按钮并添加到布局
+            for model_name, model_path in self.model_pair.items():
+                # 创建一个水平布局来放置单选按钮和标签
+                h_layout = QHBoxLayout()
+                
+                # 创建单选按钮
+                radio_btn = QRadioButton()
+                self.model_radio_group.addButton(radio_btn)
+                radio_btn.setObjectName(f"radio_{model_name}")
+                
+                # 设置默认选中状态
+                if model_name == self.selected_model_name:
+                    radio_btn.setChecked(True)
+                
+                # 创建模型信息标签
+                model_info = QLabel(f"{model_name}")
+                model_info.setToolTip(model_path)  # 鼠标悬停时显示完整路径
+                
+                # 添加到水平布局
+                h_layout.addWidget(radio_btn)
+                h_layout.addWidget(model_info)
+                h_layout.addStretch()
+                
+                # 将水平布局添加到垂直布局
+                self.model_radio_layout.addLayout(h_layout)
+                
+                # 连接信号
+                radio_btn.clicked.connect(lambda checked, name=model_name: self.on_model_radio_selected(name))
+            
+            # 将内容窗口添加到滚动区域
+            model_scroll_area.setWidget(scroll_content)
+            
+            # 显示当前选中的模型路径
+            self.selected_model_path = QLabel(current_model_path)
+            self.selected_model_path.setStyleSheet("color: #666; font-style: italic;")
+            self.selected_model_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            
+            # 添加到表单布局
+            model_form_layout.addRow("可用模型:", model_scroll_area)
+            model_form_layout.addRow("当前模型路径:", self.selected_model_path)
+        
+        model_group.setLayout(model_form_layout)
+        model_layout.addWidget(model_group)
+        model_layout.addStretch()
+        right_panel.addTab(model_tab, "模型设置")
+        
         # 输出设置标签页
         output_tab = QWidget()
         output_layout = QVBoxLayout(output_tab)
@@ -922,17 +1057,6 @@ class BoxAnnotationTool(QMainWindow):
 
         # 设置分割器初始大小
         main_splitter.setSizes([800, 400])
-    
-    def init_classes(self):
-        """ 初始化类别字典 """
-        classes = {}
-        with open(self.config['classes_path'], 'r') as f:
-            for i,line in enumerate(f):
-                line = line.strip()
-                if line:
-                    cls_name = line.split()[0]
-                    classes[i] = cls_name
-        return classes
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1030,12 +1154,11 @@ class BoxAnnotationTool(QMainWindow):
             self.current_frame_index = 0
             self.original_annotations = {}
             self.annotations = {}
-            
             # 更新视频信息
             self.frame_rate = 1  # 图片序列的帧率设为1
 
             # 图片帧读取线程加载所有图片
-            def frame_reader():
+            def frame_reader(pure_frames_cutting=False):
                 self.loading = True
                 for frame_index,file in enumerate(files):
                     if not montage:
@@ -1043,16 +1166,16 @@ class BoxAnnotationTool(QMainWindow):
                     else:
                         file_path = os.path.join(self.video_path, file)
                     frame = cv2.imread(file_path)
-                    if frame is not None:
-                        # 转换为RGB格式
-                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        if self.config['model_path'] is not None:
-                            result = self.Extract_the_annotation_information(frame)
-                            self.Save_model_recognition_annotations(result, frame_index)
-                        self.frame_queue.put(frame)
-                        self.total_frame_count += 1
-                    else:
+                    if frame is None:
                         print(f"无法加载图片: {file}")
+                        continue
+                    # 转换为RGB格式
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    if not pure_frames_cutting:
+                        result = self.Extract_the_annotation_information(frame)
+                        self.Save_model_recognition_annotations(result, frame_index)
+                    self.frame_queue.put(frame)
+                    self.total_frame_count += 1
                     # 实时更新界面显示
                     self.frame_num_value.setText(f"{self.current_frame_index + 1}/{self.total_frame_count} (加载中...)")
                 # 视频帧读取完毕后，放入None作为结束信号
@@ -1061,8 +1184,11 @@ class BoxAnnotationTool(QMainWindow):
                 # 通知主线程更新界面（加载完成）
                 self.frame_num_value.setText(f"{self.current_frame_index + 1}/{self.total_frame_count}")
             
-            # 1. 先将视频帧转换为图片帧，启动视频帧读取子线程，当视频读取结束后，视频帧读取子线程会结束
-            self.reader_thread = threading.Thread(target=frame_reader)
+            # 1. 判断模型是否有效，将视频帧转换为图片帧，启动视频帧读取子线程，当视频读取结束后，视频帧读取子线程会结束
+            if not self.selected_model_name:
+                self.reader_thread = threading.Thread(target=frame_reader,args=(True,))
+            else:
+                self.reader_thread = threading.Thread(target=frame_reader,)
             self.reader_thread.daemon = True
             self.reader_thread.start()
 
@@ -1097,7 +1223,7 @@ class BoxAnnotationTool(QMainWindow):
             # 查看self.video_path路径最后一个文件的后缀
             file_name = str(self.video_path.split('/')[-1])
             _, file_extension = os.path.splitext(file_name)
-            # 如果文件是图像类型的
+            # 如果文件是图像类型的，处理输入单张图片的情况
             if file_extension in image_extensions:
                 self.load_default_atlas([file_name], False)
                 return
@@ -1113,7 +1239,7 @@ class BoxAnnotationTool(QMainWindow):
             # self.total_frame_count = int(math.ceil(cap.get(cv2.CAP_PROP_FRAME_COUNT)/self.video_frame_selection_interval))
 
             # 图片帧读取线程    
-            def frame_reader(cap:cv2.VideoCapture):
+            def frame_reader(cap:cv2.VideoCapture, pure_frames_cutting=False):
                 frame_count = 0
                 self.loading = True
                 while cap.isOpened():
@@ -1123,8 +1249,8 @@ class BoxAnnotationTool(QMainWindow):
                     # 从第一张开始，每隔k张读取一帧
                     if frame_count % self.video_frame_selection_interval == 0:
                         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        # 解析当前帧的标注信息
-                        if self.config['model_path'] is not None:
+                        if not pure_frames_cutting:
+                            # 解析当前帧的标注信息
                             result = self.Extract_the_annotation_information(frame)
                             # 保存当前帧的标注信息
                             self.Save_model_recognition_annotations(result, int((frame_count / self.video_frame_selection_interval)))
@@ -1140,8 +1266,11 @@ class BoxAnnotationTool(QMainWindow):
                 self.frame_num_value.setText(f"{self.current_frame_index + 1}/{self.total_frame_count}")
                 cap.release()
 
-            # 1. 先将视频帧转换为图片帧，启动视频帧读取子线程，当视频读取结束后，视频帧读取子线程会结束
-            self.reader_thread = threading.Thread(target=frame_reader, args=(self.cap,))
+            # 1. 先判断模型是否有效，将视频帧转换为图片帧，启动视频帧读取子线程，当视频读取结束后，视频帧读取子线程会结束
+            if not self.selected_model_name:
+                self.reader_thread = threading.Thread(target=frame_reader,args=(self.cap, True,))
+            else:
+                self.reader_thread = threading.Thread(target=frame_reader, args=(self.cap,))
             self.reader_thread.daemon = True
             self.reader_thread.start()
 
@@ -1228,7 +1357,7 @@ class BoxAnnotationTool(QMainWindow):
             self.video_display.setPixmap(QPixmap.fromImage(scaled_image))
 
     # 更新当前帧的图片信息（视频名称、总帧数、当前帧数、是否为关键帧、fps、当前标注框的类别和标签），同时更新右侧的类别标签
-    def update_frame_info(self):  
+    def update_frame_info(self):
         """更新帧信息显示"""
         self.video_id_value.setText(str(self.video_path.split('/')[-1]).split('.')[0])
         if self.loading:
@@ -1305,7 +1434,7 @@ class BoxAnnotationTool(QMainWindow):
             item = self.draw_category_item(new_annotation)
             # 存储列表项引用，以标注ID为键
             self.category_labels[new_annotation['id']] = item
-        else:
+        else:       # 切换帧需要更新全部列表
             # 显示当前帧的所有类别和标签
             for annotation in self.annotations[self.current_frame_index]:
                 # 绘制列表项
@@ -2312,6 +2441,19 @@ class BoxAnnotationTool(QMainWindow):
         finally:
             # 无论执行是否成功，都确保释放锁
             self.next_frame_lock.release()
+    
+    # 当单选按钮选中时更新模型路径
+    def on_model_radio_selected(self, model_name):
+        """当单选按钮选中时更新模型路径"""
+        if model_name in self.model_pair:
+            # 更新配置中的模型路径
+            new_model_path = self.model_pair[model_name]
+            self.config['model_path'] = new_model_path
+            # 更新显示的模型路径
+            self.selected_model_path.setText(new_model_path)
+            
+            # 这里可以添加模型切换后的其他处理逻辑，比如重新初始化模型等
+            # 例如：self.init_model() 或其他相关方法
     
     # 浏览并选择输入视频路径
     def browse_input_video_path(self):
